@@ -25,6 +25,7 @@ type options struct {
 	prompt   string
 	model    string
 	baseURL  string
+	apiKey   string
 	cwd      string
 	system   string
 	tools    string
@@ -68,7 +69,7 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	}
 	provider, err := openaicompat.New(openaicompat.Config{
 		BaseURL: opts.baseURL,
-		APIKey:  os.Getenv("OPENAI_API_KEY"),
+		APIKey:  opts.apiKey,
 		Timeout: opts.timeout,
 	})
 	if err != nil {
@@ -115,17 +116,31 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 }
 
 func parseOptions(args []string, stderr io.Writer) (options, error) {
-	var opts options
+	config, err := loadConfig()
+	if err != nil {
+		return options{}, err
+	}
+	return parseOptionsWithConfig(args, stderr, config, os.LookupEnv)
+}
+
+func parseOptionsWithConfig(args []string, stderr io.Writer, config fileConfig, lookupEnv func(string) (string, bool)) (options, error) {
+	opts, err := optionsFromConfig(config)
+	if err != nil {
+		return options{}, err
+	}
+	if err := applyEnvironment(&opts, lookupEnv); err != nil {
+		return options{}, err
+	}
 	flags := flag.NewFlagSet("iota", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&opts.prompt, "p", "", "run one prompt and exit")
-	flags.StringVar(&opts.model, "model", os.Getenv("IOTA_MODEL"), "model name (or IOTA_MODEL)")
-	flags.StringVar(&opts.baseURL, "base-url", os.Getenv("OPENAI_BASE_URL"), "OpenAI-compatible base URL")
-	flags.StringVar(&opts.cwd, "cwd", ".", "working directory")
-	flags.StringVar(&opts.system, "system", "", "additional system prompt")
-	flags.StringVar(&opts.tools, "tools", "read,write,edit,bash", "comma-separated tools, or none")
-	flags.IntVar(&opts.maxTurns, "max-turns", iota.DefaultMaxTurns, "maximum model turns per run")
-	flags.DurationVar(&opts.timeout, "timeout", openaicompat.DefaultTimeout, "timeout for each model request and bash command")
+	flags.StringVar(&opts.model, "model", opts.model, "model name")
+	flags.StringVar(&opts.baseURL, "base-url", opts.baseURL, "OpenAI-compatible base URL")
+	flags.StringVar(&opts.cwd, "cwd", opts.cwd, "working directory")
+	flags.StringVar(&opts.system, "system", opts.system, "additional system prompt")
+	flags.StringVar(&opts.tools, "tools", opts.tools, "comma-separated tools, or none")
+	flags.IntVar(&opts.maxTurns, "max-turns", opts.maxTurns, "maximum model turns per run")
+	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "timeout for each model request and bash command")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
 	}

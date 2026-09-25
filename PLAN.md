@@ -60,7 +60,7 @@ CLI 行为：
 - `-p` 与管道输入冲突时报用法错误。
 - 模型文本写 stdout，提示符、工具状态和错误写 stderr。
 - 支持模型、服务地址、cwd、系统提示、轮数、超时和工具选择参数。
-- 模型优先使用参数，其次 `IOTA_MODEL`；地址读取 `OPENAI_BASE_URL`，凭据读取 `OPENAI_API_KEY`。
+- CLI 配置优先级为内置默认值、选中的 TOML 配置、环境变量、显式参数。配置文件先查 `~/.iota/config.toml`，不存在时再查启动目录的 `config.toml`，两者不合并。
 - CLI 默认启用四个工具，并读取 cwd 根部的 `AGENTS.md`；不搜索父目录或子目录。
 
 ## 验收

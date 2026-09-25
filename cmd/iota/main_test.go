@@ -18,7 +18,12 @@ import (
 
 func TestParseOptions(t *testing.T) {
 	var stderr bytes.Buffer
-	opts, err := parseOptions([]string{"--model", "model", "--max-turns", "3", "--timeout", "5s", "--tools", "none"}, &stderr)
+	opts, err := parseOptionsWithConfig(
+		[]string{"--model", "model", "--max-turns", "3", "--timeout", "5s", "--tools", "none"},
+		&stderr,
+		fileConfig{},
+		func(string) (string, bool) { return "", false },
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
