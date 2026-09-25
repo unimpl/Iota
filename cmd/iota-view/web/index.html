@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Iota Sessions</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="shell" id="shell">
+    <aside class="sidebar" id="sidebar" aria-label="Session 列表">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">ι</span><span>Iota <small>Sessions</small></span></div>
+      <div class="side-heading"><span>会话记录</span><span id="session-count">0</span></div>
+      <nav id="sessions" aria-label="选择 session"></nav>
+      <div class="side-foot">本地记录 · 仅供查看</div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <button id="toggle-sidebar" class="icon-button" aria-label="隐藏 session 列表" aria-expanded="true" title="切换 session 列表">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <span class="topbar-title">执行记录</span>
+        <span id="connection" class="connection">等待连接</span>
+      </header>
+      <div class="content">
+        <section class="session-header" id="session-header">
+          <h1>选择一个 session</h1>
+          <p>从左侧查看 Iota 的执行过程。</p>
+        </section>
+        <div id="timeline" class="timeline"></div>
+      </div>
+    </main>
+  </div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

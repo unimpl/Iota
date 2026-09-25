@@ -106,6 +106,8 @@ func TestRunRejectsPromptWithPipedInput(t *testing.T) {
 }
 
 func TestRunWithPromptFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
@@ -120,6 +122,19 @@ func TestRunWithPromptFlag(t *testing.T) {
 	code := run([]string{"--model", "test", "--base-url", server.URL, "--cwd", t.TempDir(), "--tools", "none", "-p", "question"}, stdin, &stdout, &stderr)
 	if code != 0 || stdout.String() != "answer\n" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	entries, err := os.ReadDir(filepath.Join(home, ".iota", "sessions"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("session entries=%v err=%v", entries, err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".iota", "sessions", entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"session_start", "run_start", "message_added", "model_request", "text_delta", "model_response", "run_end", "session_end"} {
+		if !strings.Contains(string(data), `"type":"`+kind+`"`) {
+			t.Fatalf("session is missing %s: %s", kind, data)
+		}
 	}
 }
 
@@ -146,7 +161,7 @@ func TestInteractiveResetAndExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr); code != 0 {
+	if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr, nil); code != 0 {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "conversation reset") {

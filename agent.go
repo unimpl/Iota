@@ -177,6 +177,7 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 
 	reason := "error"
 	emitEvent(emit, Event{Type: EventRunStart})
+	emitEvent(emit, Event{Type: EventMessageAdded, Message: cloneMessagePointer(userMessage)})
 	defer func() {
 		a.mu.Lock()
 		result.Messages = cloneMessages(a.messages[start:])
@@ -187,7 +188,11 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 		} else if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 			reason = "aborted"
 		}
-		emitEvent(emit, Event{Type: EventRunEnd, Turn: result.Turns, Reason: reason, IsError: runErr != nil})
+		end := Event{Type: EventRunEnd, Turn: result.Turns, Reason: reason, IsError: runErr != nil}
+		if runErr != nil {
+			end.Error = runErr.Error()
+		}
+		emitEvent(emit, end)
 	}()
 
 	definitions := make([]ToolDefinition, len(a.tools))
@@ -207,6 +212,13 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 			Messages:     a.Messages(),
 			Tools:        definitions,
 		}
+		requestEvent := request
+		requestEvent.Messages = cloneMessages(request.Messages)
+		requestEvent.Tools = append([]ToolDefinition(nil), request.Tools...)
+		for i := range requestEvent.Tools {
+			requestEvent.Tools[i].Schema = append(json.RawMessage(nil), request.Tools[i].Schema...)
+		}
+		emitEvent(emit, Event{Type: EventModelRequest, Turn: turn, Request: &requestEvent})
 		response, err := a.provider.Stream(ctx, request, func(delta Delta) {
 			if delta.Text != "" {
 				emitEvent(emit, Event{Type: EventTextDelta, Turn: turn, Text: delta.Text})
@@ -221,9 +233,15 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 		if err := validateToolCalls(response.ToolCalls); err != nil {
 			return result, fmt.Errorf("invalid provider response: %w", err)
 		}
+		responseEvent := Event{Type: EventModelResponse, Turn: turn, Reason: response.StopReason}
+		if response.Usage != nil {
+			usage := *response.Usage
+			responseEvent.Usage = &usage
+		}
+		emitEvent(emit, responseEvent)
 
 		assistant := Message{Role: RoleAssistant, Content: response.Content, ToolCalls: cloneToolCalls(response.ToolCalls)}
-		a.appendMessage(assistant)
+		a.appendMessage(assistant, turn, emit)
 		if len(response.ToolCalls) == 0 {
 			result.Text = response.Content
 			result.StopReason = response.StopReason
@@ -235,16 +253,16 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 
 		for index, call := range response.ToolCalls {
 			if err := ctx.Err(); err != nil {
-				a.appendCancelledResults(response.ToolCalls[index:])
+				a.appendCancelledResults(response.ToolCalls[index:], turn, emit)
 				return result, err
 			}
 			emitEvent(emit, Event{Type: EventToolStart, Turn: turn, ToolCall: cloneToolCallPointer(call)})
 			text, isError := a.executeTool(ctx, call)
 			toolMessage := Message{Role: RoleTool, Content: text, ToolCallID: call.ID, ToolName: call.Name, IsError: isError}
-			a.appendMessage(toolMessage)
+			a.appendMessage(toolMessage, turn, emit)
 			emitEvent(emit, Event{Type: EventToolEnd, Turn: turn, ToolCall: cloneToolCallPointer(call), ToolResult: text, IsError: isError})
 			if err := ctx.Err(); err != nil {
-				a.appendCancelledResults(response.ToolCalls[index+1:])
+				a.appendCancelledResults(response.ToolCalls[index+1:], turn, emit)
 				return result, err
 			}
 		}
@@ -300,15 +318,16 @@ func (a *Agent) executeTool(ctx context.Context, call ToolCall) (string, bool) {
 	return text, false
 }
 
-func (a *Agent) appendMessage(message Message) {
+func (a *Agent) appendMessage(message Message, turn int, emit EmitFunc) {
 	a.mu.Lock()
 	a.messages = append(a.messages, message)
 	a.mu.Unlock()
+	emitEvent(emit, Event{Type: EventMessageAdded, Turn: turn, Message: cloneMessagePointer(message)})
 }
 
-func (a *Agent) appendCancelledResults(calls []ToolCall) {
+func (a *Agent) appendCancelledResults(calls []ToolCall, turn int, emit EmitFunc) {
 	for _, call := range calls {
-		a.appendMessage(Message{Role: RoleTool, Content: "operation canceled before tool execution", ToolCallID: call.ID, ToolName: call.Name, IsError: true})
+		a.appendMessage(Message{Role: RoleTool, Content: "operation canceled before tool execution", ToolCallID: call.ID, ToolName: call.Name, IsError: true}, turn, emit)
 	}
 }
 
@@ -339,5 +358,11 @@ func cloneToolCalls(calls []ToolCall) []ToolCall {
 func cloneToolCallPointer(call ToolCall) *ToolCall {
 	copy := call
 	copy.Arguments = append(json.RawMessage(nil), call.Arguments...)
+	return &copy
+}
+
+func cloneMessagePointer(message Message) *Message {
+	copy := message
+	copy.ToolCalls = cloneToolCalls(message.ToolCalls)
 	return &copy
 }

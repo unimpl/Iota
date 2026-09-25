@@ -55,7 +55,7 @@ func TestAgentDirectAnswer(t *testing.T) {
 	if result.Text != "hello" || result.Turns != 1 || result.StopReason != "stop" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	want := []EventType{EventRunStart, EventTurnStart, EventTextDelta, EventRunEnd}
+	want := []EventType{EventRunStart, EventMessageAdded, EventTurnStart, EventModelRequest, EventTextDelta, EventModelResponse, EventMessageAdded, EventRunEnd}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}

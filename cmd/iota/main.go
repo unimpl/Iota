@@ -93,12 +93,26 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "iota: -p cannot be combined with piped standard input")
 		return 2
 	}
+	log, err := newSessionLog(opts.model, absCWD)
+	if err != nil {
+		fmt.Fprintln(stderr, "iota:", err)
+		return 1
+	}
+	defer func() {
+		if err := log.write("", "session_end", nil); err != nil {
+			fmt.Fprintln(stderr, "iota: session recording incomplete:", err)
+		}
+		if err := log.close(); err != nil {
+			fmt.Fprintln(stderr, "iota: close session file:", err)
+		}
+	}()
+	fmt.Fprintln(stderr, "session:", log.path)
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 
 	if opts.prompt != "" {
-		return execute(agent, opts.prompt, signals, stdout, stderr, true)
+		return execute(agent, opts.prompt, signals, stdout, stderr, true, log)
 	}
 	if !terminal {
 		data, err := io.ReadAll(stdin)
@@ -110,9 +124,9 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "iota: standard input is empty")
 			return 2
 		}
-		return execute(agent, string(data), signals, stdout, stderr, true)
+		return execute(agent, string(data), signals, stdout, stderr, true, log)
 	}
-	return interactive(agent, signals, stdin, stdout, stderr)
+	return interactive(agent, signals, stdin, stdout, stderr, log)
 }
 
 func parseOptions(args []string, stderr io.Writer) (options, error) {
@@ -196,7 +210,7 @@ func createTools(cwd, list string, timeout time.Duration) ([]iota.Tool, error) {
 	return result, nil
 }
 
-func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, stdout, stderr io.Writer) int {
+func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, stdout, stderr io.Writer, log *sessionLog) int {
 	lines := make(chan string)
 	errorsChannel := make(chan error, 1)
 	go func() {
@@ -230,25 +244,42 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 				if err := agent.Reset(); err != nil {
 					fmt.Fprintln(stderr, "iota:", err)
 				} else {
+					if err := log.write("", "session_reset", nil); err != nil {
+						fmt.Fprintln(stderr, "iota: session recording incomplete:", err)
+					}
 					fmt.Fprintln(stderr, "conversation reset")
 				}
 				continue
 			}
-			_ = execute(agent, line, signals, stdout, stderr, false)
+			_ = execute(agent, line, signals, stdout, stderr, false, log)
 		}
 	}
 }
 
-func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout, stderr io.Writer, single bool) int {
+func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout, stderr io.Writer, single bool, log *sessionLog) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	runID := ""
+	if log != nil {
+		var err error
+		runID, err = newUUID()
+		if err != nil {
+			fmt.Fprintln(stderr, "iota:", err)
+			return 1
+		}
+	}
 	type outcome struct {
 		result iota.RunResult
 		err    error
 	}
 	done := make(chan outcome, 1)
 	go func() {
+		recordingErrorReported := false
 		result, err := agent.Run(ctx, prompt, func(event iota.Event) {
+			if writeErr := log.event(runID, event); writeErr != nil && !recordingErrorReported {
+				fmt.Fprintln(stderr, "iota: session recording incomplete:", writeErr)
+				recordingErrorReported = true
+			}
 			switch event.Type {
 			case iota.EventTextDelta:
 				fmt.Fprint(stdout, event.Text)

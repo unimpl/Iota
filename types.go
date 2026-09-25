@@ -42,10 +42,10 @@ type Tool struct {
 }
 
 type Request struct {
-	Model        string
-	SystemPrompt string
-	Messages     []Message
-	Tools        []ToolDefinition
+	Model        string           `json:"model"`
+	SystemPrompt string           `json:"system_prompt"`
+	Messages     []Message        `json:"messages"`
+	Tools        []ToolDefinition `json:"tools"`
 }
 
 type Usage struct {
@@ -72,22 +72,29 @@ type Provider interface {
 type EventType string
 
 const (
-	EventRunStart  EventType = "run_start"
-	EventTurnStart EventType = "turn_start"
-	EventTextDelta EventType = "text_delta"
-	EventToolStart EventType = "tool_start"
-	EventToolEnd   EventType = "tool_end"
-	EventRunEnd    EventType = "run_end"
+	EventRunStart      EventType = "run_start"
+	EventTurnStart     EventType = "turn_start"
+	EventMessageAdded  EventType = "message_added"
+	EventModelRequest  EventType = "model_request"
+	EventModelResponse EventType = "model_response"
+	EventTextDelta     EventType = "text_delta"
+	EventToolStart     EventType = "tool_start"
+	EventToolEnd       EventType = "tool_end"
+	EventRunEnd        EventType = "run_end"
 )
 
 type Event struct {
-	Type       EventType
-	Turn       int
-	Text       string
-	ToolCall   *ToolCall
-	ToolResult string
-	IsError    bool
-	Reason     string
+	Type       EventType `json:"type"`
+	Turn       int       `json:"turn,omitempty"`
+	Text       string    `json:"text,omitempty"`
+	Message    *Message  `json:"message,omitempty"`
+	Request    *Request  `json:"request,omitempty"`
+	Usage      *Usage    `json:"usage,omitempty"`
+	ToolCall   *ToolCall `json:"tool_call,omitempty"`
+	ToolResult string    `json:"tool_result,omitempty"`
+	IsError    bool      `json:"is_error,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	Error      string    `json:"error,omitempty"`
 }
 
 type EmitFunc func(Event)
