@@ -120,7 +120,7 @@ func (p *Provider) Stream(ctx context.Context, request iota.Request, emit func(i
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 
-	body, err := encodeRequest(request)
+	body, err := p.EncodeRequest(request)
 	if err != nil {
 		return iota.Response{}, err
 	}
@@ -133,7 +133,6 @@ func (p *Provider) Stream(ctx context.Context, request iota.Request, emit func(i
 	if p.apiKey != "" {
 		httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
-
 	httpResponse, err := p.client.Do(httpRequest)
 	if err != nil {
 		return iota.Response{}, err
@@ -148,6 +147,10 @@ func (p *Provider) Stream(ctx context.Context, request iota.Request, emit func(i
 	}
 
 	return consumeStream(httpResponse.Body, emit)
+}
+
+func (p *Provider) EncodeRequest(request iota.Request) ([]byte, error) {
+	return encodeRequest(request)
 }
 
 func encodeRequest(request iota.Request) ([]byte, error) {
@@ -200,16 +203,26 @@ func consumeStream(reader io.Reader, emit func(iota.Delta)) (iota.Response, erro
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
+			if emit != nil {
+				emit(iota.Delta{RawChunk: line})
+			}
 			done = true
 			break
 		}
 		var chunk streamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			if emit != nil {
+				emit(iota.Delta{RawChunk: line})
+			}
 			return iota.Response{}, fmt.Errorf("decode stream event: %w", err)
 		}
 		if chunk.Error != nil {
+			if emit != nil {
+				emit(iota.Delta{RawChunk: line})
+			}
 			return iota.Response{}, fmt.Errorf("provider error %s: %s", chunk.Error.Type, chunk.Error.Message)
 		}
+		emitted := false
 		if chunk.Usage != nil {
 			usage := *chunk.Usage
 			response.Usage = &usage
@@ -218,10 +231,17 @@ func consumeStream(reader io.Reader, emit func(iota.Delta)) (iota.Response, erro
 			if choice.Delta.Content != nil {
 				response.Content += *choice.Delta.Content
 				if emit != nil && *choice.Delta.Content != "" {
-					emit(iota.Delta{Text: *choice.Delta.Content})
+					emit(iota.Delta{Text: *choice.Delta.Content, RawChunk: line})
+					emitted = true
 				}
 			}
 			for _, delta := range choice.Delta.ToolCalls {
+				if emit != nil {
+					emit(iota.Delta{ToolCall: &iota.ToolCallDelta{
+						Index: delta.Index, ID: delta.ID, Name: delta.Function.Name, Arguments: delta.Function.Arguments,
+					}, RawChunk: line})
+					emitted = true
+				}
 				call := builders[delta.Index]
 				if call == nil {
 					call = &wireToolCall{Index: delta.Index}
@@ -239,6 +259,9 @@ func consumeStream(reader io.Reader, emit func(iota.Delta)) (iota.Response, erro
 			if choice.FinishReason != nil {
 				response.StopReason = *choice.FinishReason
 			}
+		}
+		if emit != nil && !emitted {
+			emit(iota.Delta{RawChunk: line})
 		}
 	}
 	if err := scanner.Err(); err != nil {

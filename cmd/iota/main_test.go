@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -135,6 +136,39 @@ func TestRunWithPromptFlag(t *testing.T) {
 		if !strings.Contains(string(data), `"type":"`+kind+`"`) {
 			t.Fatalf("session is missing %s: %s", kind, data)
 		}
+	}
+	var requestBody string
+	var textChunks, otherChunks int
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		var record struct {
+			Type    string `json:"type"`
+			Payload struct {
+				RawRequest string `json:"raw_request"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.Type == "model_request_body" {
+			t.Fatal("raw request was recorded as a separate event")
+		}
+		if record.Type == "model_request" {
+			requestBody = record.Payload.RawRequest
+		}
+		if record.Type == "text_delta" {
+			textChunks++
+		}
+		if record.Type == "model_stream_other" {
+			otherChunks++
+		}
+	}
+	if textChunks != 1 || otherChunks != 1 || !strings.Contains(requestBody, `"stream":true`) ||
+		!strings.Contains(string(data), `"raw_chunk":"data: {`) ||
+		!strings.Contains(string(data), `"type":"model_stream_other"`) {
+		t.Fatalf("session is missing raw model traffic: %s", data)
 	}
 }
 

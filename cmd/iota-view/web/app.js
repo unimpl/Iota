@@ -191,11 +191,11 @@ function groupedEvents() {
   const result = [];
   for (const record of records) {
     const previous = result.at(-1);
-    if (record.type === 'text_delta' && previous?.kind === 'stream' &&
+    if ((record.type === 'text_delta' || record.type === 'tool_call_delta') && previous?.kind === record.type &&
         previous.runID === record.run_id && previous.turn === record.payload?.turn) {
       previous.records.push(record);
-    } else if (record.type === 'text_delta') {
-      result.push({ kind: 'stream', runID: record.run_id, turn: record.payload?.turn, records: [record] });
+    } else if (record.type === 'text_delta' || record.type === 'tool_call_delta') {
+      result.push({ kind: record.type, runID: record.run_id, turn: record.payload?.turn, records: [record] });
     } else {
       result.push({ kind: 'event', record });
     }
@@ -240,7 +240,7 @@ function renderEvent(item) {
   const record = item.record || item.records[0];
   const last = item.records?.at(-1) || record;
   const payload = record.payload || {};
-  const entry = node('li', 'event-entry event-' + (item.kind === 'stream' ? 'stream' : record.type));
+  const entry = node('li', 'event-entry event-' + record.type);
   const rail = node('div', 'event-rail');
   rail.append(node('span', 'event-seq', record.seq === last.seq ? '#' + record.seq : '#' + record.seq + '–' + last.seq));
   const time = node('time', 'event-time', clockTime(record.timestamp));
@@ -258,17 +258,33 @@ function renderEvent(item) {
     if (value) content.append(node('p', className, value));
   };
 
-  if (item.kind === 'stream') {
+  if (item.kind === 'text_delta' || item.kind === 'tool_call_delta') {
     badge.textContent = 'STREAM';
-    title.textContent = '模型文本逐段到达';
-    summary(item.records.length + ' 个片段 · 第 ' + item.turn + ' 轮。完整回复会在稍后写入对话。');
-    content.append(textDisclosure('查看生成中的文字', item.records.map(part => part.payload?.text || '').join(''), 'stream-' + record.seq));
+    const isToolCall = item.kind === 'tool_call_delta';
+    title.textContent = isToolCall ? '工具调用逐段到达' : '模型文本逐段到达';
+    summary(item.records.length + ' 个片段 · 第 ' + item.turn + ' 轮。' +
+      (isToolCall ? '完整工具调用会在稍后写入对话。' : '完整回复会在稍后写入对话。'));
+    if (isToolCall) {
+      const calls = new Map();
+      for (const part of item.records) {
+        const delta = part.payload?.tool_call_delta || {};
+        const call = calls.get(delta.index) || { index: delta.index, id: '', name: '', arguments: '' };
+        if (delta.id) call.id = delta.id;
+        call.name += delta.name || '';
+        call.arguments += delta.arguments || '';
+        calls.set(delta.index, call);
+      }
+      content.append(textDisclosure('查看生成中的工具调用', [...calls.values()], 'stream-' + record.seq));
+    } else {
+      content.append(textDisclosure('查看生成中的文字', item.records.map(part => part.payload?.text || '').join(''), 'stream-' + record.seq));
+    }
     content.append(disclosure('查看各片段的序号、时间和 JSON', 'chunks-' + record.seq, () => {
       const rows = node('div', 'chunk-list');
       for (const part of item.records) {
         const row = node('div', 'chunk-row');
         row.append(node('span', 'mono', '#' + part.seq + ' · ' + clockTime(part.timestamp)));
-        row.append(node('span', '', JSON.stringify(part.payload?.text || '')));
+        row.append(node('span', '', JSON.stringify(isToolCall ? part.payload?.tool_call_delta || {} : part.payload?.text || '')));
+        if (part.payload?.raw_chunk) row.append(textDisclosure('查看原始流消息', part.payload.raw_chunk, 'raw-chunk-' + part.seq));
         row.append(jsonDisclosure(part));
         rows.append(row);
       }
@@ -309,9 +325,16 @@ function renderEvent(item) {
       badge.textContent = 'MODEL'; title.textContent = '向模型发送请求';
       const request = payload.request || {};
       summary((request.model || '模型') + ' · ' + (request.messages?.length || 0) + ' 条消息 · ' + (request.tools?.length || 0) + ' 个可用工具');
+      if (payload.raw_request) content.append(textDisclosure('查看原始请求体', payload.raw_request, 'raw-request-' + record.seq));
       content.append(disclosure('查看请求内容', 'request-' + record.seq, () => renderRequest(request, record.seq)));
       break;
     }
+    case 'model_stream_other':
+      badge.textContent = 'STREAM'; title.textContent = '其他原始流消息';
+      summary(payload.raw_chunk?.trim() === 'data: [DONE]' ? '流结束标记' :
+        '没有文本或工具调用片段');
+      content.append(textDisclosure('查看原始流消息', payload.raw_chunk || '', 'raw-chunk-' + record.seq));
+      break;
     case 'model_response': {
       badge.textContent = 'MODEL'; title.textContent = '模型完成本轮生成';
       const usage = payload.usage;

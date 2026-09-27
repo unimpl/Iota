@@ -218,10 +218,25 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 		for i := range requestEvent.Tools {
 			requestEvent.Tools[i].Schema = append(json.RawMessage(nil), request.Tools[i].Schema...)
 		}
-		emitEvent(emit, Event{Type: EventModelRequest, Turn: turn, Request: &requestEvent})
+		requestRecord := Event{Type: EventModelRequest, Turn: turn, Request: &requestEvent}
+		if encoder, ok := a.provider.(RequestEncoder); ok {
+			body, err := encoder.EncodeRequest(request)
+			if err != nil {
+				return result, err
+			}
+			requestRecord.RawRequest = string(body)
+		}
+		emitEvent(emit, requestRecord)
 		response, err := a.provider.Stream(ctx, request, func(delta Delta) {
 			if delta.Text != "" {
-				emitEvent(emit, Event{Type: EventTextDelta, Turn: turn, Text: delta.Text})
+				emitEvent(emit, Event{Type: EventTextDelta, Turn: turn, Text: delta.Text, RawChunk: delta.RawChunk})
+			}
+			if delta.ToolCall != nil {
+				call := *delta.ToolCall
+				emitEvent(emit, Event{Type: EventToolCallDelta, Turn: turn, ToolCallDelta: &call, RawChunk: delta.RawChunk})
+			}
+			if delta.RawChunk != "" && delta.Text == "" && delta.ToolCall == nil {
+				emitEvent(emit, Event{Type: EventStreamOther, Turn: turn, RawChunk: delta.RawChunk})
 			}
 		})
 		if err != nil {

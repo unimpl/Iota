@@ -62,11 +62,24 @@ type Response struct {
 }
 
 type Delta struct {
-	Text string
+	Text     string
+	ToolCall *ToolCallDelta
+	RawChunk string
+}
+
+type ToolCallDelta struct {
+	Index     int    `json:"index"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 type Provider interface {
 	Stream(context.Context, Request, func(Delta)) (Response, error)
+}
+
+type RequestEncoder interface {
+	EncodeRequest(Request) ([]byte, error)
 }
 
 type EventType string
@@ -77,24 +90,29 @@ const (
 	EventMessageAdded  EventType = "message_added"
 	EventModelRequest  EventType = "model_request"
 	EventModelResponse EventType = "model_response"
+	EventStreamOther   EventType = "model_stream_other"
 	EventTextDelta     EventType = "text_delta"
+	EventToolCallDelta EventType = "tool_call_delta"
 	EventToolStart     EventType = "tool_start"
 	EventToolEnd       EventType = "tool_end"
 	EventRunEnd        EventType = "run_end"
 )
 
 type Event struct {
-	Type       EventType `json:"type"`
-	Turn       int       `json:"turn,omitempty"`
-	Text       string    `json:"text,omitempty"`
-	Message    *Message  `json:"message,omitempty"`
-	Request    *Request  `json:"request,omitempty"`
-	Usage      *Usage    `json:"usage,omitempty"`
-	ToolCall   *ToolCall `json:"tool_call,omitempty"`
-	ToolResult string    `json:"tool_result,omitempty"`
-	IsError    bool      `json:"is_error,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Type          EventType      `json:"type"`
+	Turn          int            `json:"turn,omitempty"`
+	Text          string         `json:"text,omitempty"`
+	RawRequest    string         `json:"raw_request,omitempty"`
+	RawChunk      string         `json:"raw_chunk,omitempty"`
+	ToolCallDelta *ToolCallDelta `json:"tool_call_delta,omitempty"`
+	Message       *Message       `json:"message,omitempty"`
+	Request       *Request       `json:"request,omitempty"`
+	Usage         *Usage         `json:"usage,omitempty"`
+	ToolCall      *ToolCall      `json:"tool_call,omitempty"`
+	ToolResult    string         `json:"tool_result,omitempty"`
+	IsError       bool           `json:"is_error,omitempty"`
+	Reason        string         `json:"reason,omitempty"`
+	Error         string         `json:"error,omitempty"`
 }
 
 type EmitFunc func(Event)

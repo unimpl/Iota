@@ -14,6 +14,7 @@ type fakeProvider struct {
 	mu        sync.Mutex
 	responses []Response
 	requests  []Request
+	deltas    []Delta
 	block     <-chan struct{}
 }
 
@@ -35,6 +36,9 @@ func (p *fakeProvider) Stream(ctx context.Context, request Request, emit func(De
 	response := p.responses[0]
 	p.responses = p.responses[1:]
 	p.mu.Unlock()
+	for _, delta := range p.deltas {
+		emit(delta)
+	}
 	if response.Content != "" {
 		emit(Delta{Text: response.Content})
 	}
@@ -99,6 +103,32 @@ func TestAgentToolLoopAndErrors(t *testing.T) {
 	if messages[2].IsError || !messages[3].IsError || !messages[4].IsError {
 		t.Fatalf("unexpected error states: %+v", messages[2:5])
 	}
+}
+
+func TestAgentEmitsToolCallFragmentsBeforeResponse(t *testing.T) {
+	provider := &fakeProvider{
+		responses: []Response{{
+			ToolCalls:  []ToolCall{{ID: "call-1", Name: "missing", Arguments: json.RawMessage(`{}`)}},
+			StopReason: "tool_calls",
+		}},
+		deltas: []Delta{{ToolCall: &ToolCallDelta{Index: 0, ID: "call-1", Name: "missing", Arguments: "{}"}}},
+	}
+	agent, err := New(Config{Provider: provider, Model: "test", MaxTurns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []Event
+	_, _ = agent.Run(context.Background(), "go", func(event Event) { events = append(events, event) })
+	for index, event := range events {
+		if event.Type == EventToolCallDelta {
+			if event.Turn != 1 || event.ToolCallDelta == nil || event.ToolCallDelta.Arguments != "{}" ||
+				index+1 >= len(events) || events[index+1].Type != EventModelResponse {
+				t.Fatalf("tool call fragment and response: %+v", events)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing tool call fragment: %+v", events)
 }
 
 func TestAgentRejectsConcurrentRun(t *testing.T) {
