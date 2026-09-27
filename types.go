@@ -62,9 +62,10 @@ type Response struct {
 }
 
 type Delta struct {
-	Text     string
-	ToolCall *ToolCallDelta
-	RawChunk string
+	Text      string
+	Reasoning string
+	ToolCall  *ToolCallDelta
+	RawChunk  string
 }
 
 type ToolCallDelta struct {
@@ -85,23 +86,25 @@ type RequestEncoder interface {
 type EventType string
 
 const (
-	EventRunStart      EventType = "run_start"
-	EventTurnStart     EventType = "turn_start"
-	EventMessageAdded  EventType = "message_added"
-	EventModelRequest  EventType = "model_request"
-	EventModelResponse EventType = "model_response"
-	EventStreamOther   EventType = "model_stream_other"
-	EventTextDelta     EventType = "text_delta"
-	EventToolCallDelta EventType = "tool_call_delta"
-	EventToolStart     EventType = "tool_start"
-	EventToolEnd       EventType = "tool_end"
-	EventRunEnd        EventType = "run_end"
+	EventRunStart       EventType = "run_start"
+	EventTurnStart      EventType = "turn_start"
+	EventMessageAdded   EventType = "message_added"
+	EventModelRequest   EventType = "model_request"
+	EventModelResponse  EventType = "model_response"
+	EventStreamOther    EventType = "model_stream_other"
+	EventTextDelta      EventType = "text_delta"
+	EventReasoningDelta EventType = "reasoning_delta"
+	EventToolCallDelta  EventType = "tool_call_delta"
+	EventToolStart      EventType = "tool_start"
+	EventToolEnd        EventType = "tool_end"
+	EventRunEnd         EventType = "run_end"
 )
 
 type Event struct {
 	Type          EventType      `json:"type"`
 	Turn          int            `json:"turn,omitempty"`
 	Text          string         `json:"text,omitempty"`
+	Reasoning     string         `json:"reasoning,omitempty"`
 	RawRequest    string         `json:"raw_request,omitempty"`
 	RawChunk      string         `json:"raw_chunk,omitempty"`
 	ToolCallDelta *ToolCallDelta `json:"tool_call_delta,omitempty"`

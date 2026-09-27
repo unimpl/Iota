@@ -65,6 +65,37 @@ func TestAgentDirectAnswer(t *testing.T) {
 	}
 }
 
+func TestAgentEmitsReasoningAsItsOwnEvent(t *testing.T) {
+	provider := &fakeProvider{
+		responses: []Response{{Content: "answer", StopReason: "stop"}},
+		deltas:    []Delta{{Reasoning: "thinking", RawChunk: `data: {"choices":[{"delta":{"reasoning":"thinking"}}]}`}},
+	}
+	agent, err := New(Config{Provider: provider, Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []Event
+	_, err = agent.Run(context.Background(), "hi", func(event Event) { events = append(events, event) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reasoningCount, otherCount int
+	for _, event := range events {
+		switch event.Type {
+		case EventReasoningDelta:
+			reasoningCount++
+			if event.Turn != 1 || event.Reasoning != "thinking" || event.RawChunk == "" {
+				t.Fatalf("reasoning event = %+v", event)
+			}
+		case EventStreamOther:
+			otherCount++
+		}
+	}
+	if reasoningCount != 1 || otherCount != 0 {
+		t.Fatalf("reasoning=%d other=%d events=%+v", reasoningCount, otherCount, events)
+	}
+}
+
 func TestAgentToolLoopAndErrors(t *testing.T) {
 	calls := []ToolCall{
 		{ID: "one", Name: "echo", Arguments: json.RawMessage(`{"value":"a"}`)},

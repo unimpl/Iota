@@ -111,7 +111,8 @@ func TestRunWithPromptFlag(t *testing.T) {
 	t.Setenv("HOME", home)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+		fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"reasoning\":\"thinking\"}}]}\n\n"+
+			"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 	}))
 	defer server.Close()
 	stdin, err := os.Open(os.DevNull)
@@ -132,13 +133,13 @@ func TestRunWithPromptFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"session_start", "run_start", "message_added", "model_request", "text_delta", "model_response", "run_end", "session_end"} {
+	for _, kind := range []string{"session_start", "run_start", "message_added", "model_request", "reasoning_delta", "text_delta", "model_response", "run_end", "session_end"} {
 		if !strings.Contains(string(data), `"type":"`+kind+`"`) {
 			t.Fatalf("session is missing %s: %s", kind, data)
 		}
 	}
 	var requestBody string
-	var textChunks, otherChunks int
+	var textChunks, reasoningChunks, otherChunks int
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
 		if len(line) == 0 {
 			continue
@@ -161,11 +162,14 @@ func TestRunWithPromptFlag(t *testing.T) {
 		if record.Type == "text_delta" {
 			textChunks++
 		}
+		if record.Type == "reasoning_delta" {
+			reasoningChunks++
+		}
 		if record.Type == "model_stream_other" {
 			otherChunks++
 		}
 	}
-	if textChunks != 1 || otherChunks != 1 || !strings.Contains(requestBody, `"stream":true`) ||
+	if textChunks != 1 || reasoningChunks != 1 || otherChunks != 1 || !strings.Contains(requestBody, `"stream":true`) ||
 		!strings.Contains(string(data), `"raw_chunk":"data: {`) ||
 		!strings.Contains(string(data), `"type":"model_stream_other"`) {
 		t.Fatalf("session is missing raw model traffic: %s", data)

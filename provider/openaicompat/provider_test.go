@@ -122,3 +122,27 @@ func TestStreamAllowsMissingUsage(t *testing.T) {
 		t.Fatalf("response=%+v err=%v", response, err)
 	}
 }
+
+func TestConsumeStreamEmitsReasoningWithoutDuplicatingDetails(t *testing.T) {
+	stream := strings.NewReader("data: {\"choices\":[{\"delta\":{\"reasoning\":\"The\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The\"}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" answer\"}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\" is\",\"content\":\"42\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n")
+	var deltas []iota.Delta
+	response, err := consumeStream(stream, func(delta iota.Delta) { deltas = append(deltas, delta) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Content != "42" || response.StopReason != "stop" {
+		t.Fatalf("response = %+v", response)
+	}
+	if len(deltas) != 5 || deltas[0].Reasoning != "The" || deltas[1].Reasoning != " answer" ||
+		deltas[2].Reasoning != " is" || deltas[3].Text != "42" || deltas[4].RawChunk != "data: [DONE]" {
+		t.Fatalf("deltas = %+v", deltas)
+	}
+	for _, delta := range deltas[:3] {
+		if delta.Text != "" || delta.RawChunk == "" {
+			t.Fatalf("reasoning delta = %+v", delta)
+		}
+	}
+}

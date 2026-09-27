@@ -104,8 +104,11 @@ type wireFunction struct {
 type streamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   *string        `json:"content"`
-			ToolCalls []wireToolCall `json:"tool_calls"`
+			Content          *string         `json:"content"`
+			Reasoning        *string         `json:"reasoning"`
+			ReasoningContent *string         `json:"reasoning_content"`
+			ReasoningDetails json.RawMessage `json:"reasoning_details"`
+			ToolCalls        []wireToolCall  `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -228,6 +231,27 @@ func consumeStream(reader io.Reader, emit func(iota.Delta)) (iota.Response, erro
 			response.Usage = &usage
 		}
 		for _, choice := range chunk.Choices {
+			reasoning := ""
+			if choice.Delta.Reasoning != nil {
+				reasoning = *choice.Delta.Reasoning
+			}
+			if reasoning == "" && choice.Delta.ReasoningContent != nil {
+				reasoning = *choice.Delta.ReasoningContent
+			}
+			if reasoning == "" && len(choice.Delta.ReasoningDetails) > 0 {
+				var details []struct {
+					Text string `json:"text"`
+				}
+				if json.Unmarshal(choice.Delta.ReasoningDetails, &details) == nil {
+					for _, detail := range details {
+						reasoning += detail.Text
+					}
+				}
+			}
+			if emit != nil && reasoning != "" {
+				emit(iota.Delta{Reasoning: reasoning, RawChunk: line})
+				emitted = true
+			}
 			if choice.Delta.Content != nil {
 				response.Content += *choice.Delta.Content
 				if emit != nil && *choice.Delta.Content != "" {

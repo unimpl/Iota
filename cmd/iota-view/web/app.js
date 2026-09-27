@@ -12,6 +12,7 @@ let source = null;
 let records = [];
 let renderPending = false;
 const expanded = new Set();
+const expandedTurns = new Set();
 
 toggle.addEventListener('click', () => {
   const hidden = shell.classList.toggle('sidebar-hidden');
@@ -163,6 +164,7 @@ function selectSession(name) {
   selected = name;
   records = [];
   expanded.clear();
+  expandedTurns.clear();
   renderSessionList();
   scheduleRender();
   setConnection('正在连接');
@@ -173,7 +175,7 @@ function selectSession(name) {
     try { records.push(JSON.parse(event.data)); scheduleRender(); }
     catch { setConnection('记录格式有误', 'error'); }
   };
-  source.addEventListener('reset', () => { records = []; scheduleRender(); });
+  source.addEventListener('reset', () => { records = []; expanded.clear(); expandedTurns.clear(); scheduleRender(); });
   if (window.innerWidth <= 700) {
     shell.classList.add('sidebar-hidden');
     toggle.setAttribute('aria-expanded', 'false');
@@ -187,15 +189,37 @@ function scheduleRender() {
   setTimeout(() => { renderPending = false; render(); }, 100);
 }
 
+function reasoningChunk(record) {
+  if (record.type === 'reasoning_delta') return record.payload?.reasoning || '';
+  if (record.type !== 'model_stream_other') return '';
+  const raw = record.payload?.raw_chunk || '';
+  if (!raw.startsWith('data:')) return '';
+  try {
+    const chunk = JSON.parse(raw.slice(5).trim());
+    return (chunk.choices || []).map(choice => {
+      const delta = choice.delta || {};
+      if (typeof delta.reasoning === 'string' && delta.reasoning) return delta.reasoning;
+      if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) return delta.reasoning_content;
+      return (Array.isArray(delta.reasoning_details) ? delta.reasoning_details : [])
+        .filter(detail => typeof detail?.text === 'string').map(detail => detail.text).join('');
+    }).join('');
+  } catch {
+    return '';
+  }
+}
+
 function groupedEvents() {
   const result = [];
   for (const record of records) {
     const previous = result.at(-1);
-    if ((record.type === 'text_delta' || record.type === 'tool_call_delta') && previous?.kind === record.type &&
+    const reasoning = reasoningChunk(record);
+    const kind = reasoning ? 'reasoning' : record.type;
+    if ((kind === 'text_delta' || kind === 'tool_call_delta' || kind === 'reasoning') && previous?.kind === kind &&
         previous.runID === record.run_id && previous.turn === record.payload?.turn) {
       previous.records.push(record);
-    } else if (record.type === 'text_delta' || record.type === 'tool_call_delta') {
-      result.push({ kind: record.type, runID: record.run_id, turn: record.payload?.turn, records: [record] });
+      if (reasoning) previous.text += reasoning;
+    } else if (kind === 'text_delta' || kind === 'tool_call_delta' || kind === 'reasoning') {
+      result.push({ kind, runID: record.run_id, turn: record.payload?.turn, records: [record], text: reasoning });
     } else {
       result.push({ kind: 'event', record });
     }
@@ -232,11 +256,27 @@ function render() {
     records.filter(item => item.type === 'tool_start').length + ' 次工具调用'));
   timeline.append(counts);
   const list = node('ol', 'event-list');
-  for (const item of groupedEvents()) list.append(renderEvent(item));
+  let activeTurn = null;
+  for (const item of groupedEvents()) {
+    const record = item.record || item.records[0];
+    const turn = record.payload?.turn;
+    if (record.type === 'turn_start' && turn) {
+      activeTurn = { key: record.run_id + ':' + record.seq, runID: record.run_id, turn };
+    } else if (!activeTurn || record.run_id !== activeTurn.runID || turn !== activeTurn.turn || record.type === 'run_end') {
+      activeTurn = null;
+    }
+    const entry = renderEvent(item, activeTurn?.key, list);
+    if (activeTurn) {
+      entry.dataset.turnKey = activeTurn.key;
+      if (record.type === 'turn_start') entry.dataset.turnStart = 'true';
+      else entry.hidden = !expandedTurns.has(activeTurn.key);
+    }
+    list.append(entry);
+  }
   timeline.append(list);
 }
 
-function renderEvent(item) {
+function renderEvent(item, turnKey, list) {
   const record = item.record || item.records[0];
   const last = item.records?.at(-1) || record;
   const payload = record.payload || {};
@@ -246,9 +286,37 @@ function renderEvent(item) {
   const time = node('time', 'event-time', clockTime(record.timestamp));
   time.dateTime = record.timestamp || '';
   rail.append(time);
+  if (payload.turn && record.type !== 'run_end') {
+    const label = 'Turn ' + payload.turn;
+    if (record.type === 'turn_start' && turnKey) {
+      const button = node('button', 'event-turn-toggle', label);
+      button.type = 'button';
+      button.setAttribute('aria-expanded', String(expandedTurns.has(turnKey)));
+      button.setAttribute('aria-label', label + '，' + (expandedTurns.has(turnKey) ? '折叠整轮' : '展开整轮'));
+      button.addEventListener('click', () => {
+        const open = !expandedTurns.has(turnKey);
+        if (open) expandedTurns.add(turnKey);
+        else expandedTurns.delete(turnKey);
+        for (const row of list.children) {
+          if (row.dataset.turnKey === turnKey && row.dataset.turnStart !== 'true') row.hidden = !open;
+        }
+        button.setAttribute('aria-expanded', String(open));
+        button.setAttribute('aria-label', label + '，' + (open ? '折叠整轮' : '展开整轮'));
+      });
+      rail.append(button);
+    } else {
+      rail.append(node('span', 'event-turn-id', label));
+    }
+  }
   entry.append(rail, node('span', 'event-dot'));
-  const content = node('div', 'event-content');
-  const head = node('div', 'event-head');
+  const content = node('details', 'event-content');
+  const eventKey = 'event-' + record.seq;
+  content.open = expanded.has(eventKey);
+  content.addEventListener('toggle', () => {
+    if (content.open) expanded.add(eventKey);
+    else expanded.delete(eventKey);
+  });
+  const head = node('summary', 'event-head');
   const badge = node('span', 'event-badge');
   const title = node('strong', 'event-title');
   head.append(badge, title);
@@ -258,12 +326,13 @@ function renderEvent(item) {
     if (value) content.append(node('p', className, value));
   };
 
-  if (item.kind === 'text_delta' || item.kind === 'tool_call_delta') {
-    badge.textContent = 'STREAM';
+  if (item.kind === 'text_delta' || item.kind === 'tool_call_delta' || item.kind === 'reasoning') {
     const isToolCall = item.kind === 'tool_call_delta';
-    title.textContent = isToolCall ? '工具调用逐段到达' : '模型文本逐段到达';
+    const isReasoning = item.kind === 'reasoning';
+    badge.textContent = isReasoning ? 'REASON' : 'STREAM';
+    title.textContent = isReasoning ? '模型推理逐段到达' : isToolCall ? '工具调用逐段到达' : '模型文本逐段到达';
     summary(item.records.length + ' 个片段 · 第 ' + item.turn + ' 轮。' +
-      (isToolCall ? '完整工具调用会在稍后写入对话。' : '完整回复会在稍后写入对话。'));
+      (isReasoning ? '连续的推理片段已合并。' : isToolCall ? '完整工具调用会在稍后写入对话。' : '完整回复会在稍后写入对话。'));
     if (isToolCall) {
       const calls = new Map();
       for (const part of item.records) {
@@ -275,6 +344,8 @@ function renderEvent(item) {
         calls.set(delta.index, call);
       }
       content.append(textDisclosure('查看生成中的工具调用', [...calls.values()], 'stream-' + record.seq));
+    } else if (isReasoning) {
+      content.append(textDisclosure('查看推理内容', item.text, 'reasoning-' + record.seq));
     } else {
       content.append(textDisclosure('查看生成中的文字', item.records.map(part => part.payload?.text || '').join(''), 'stream-' + record.seq));
     }
@@ -283,7 +354,7 @@ function renderEvent(item) {
       for (const part of item.records) {
         const row = node('div', 'chunk-row');
         row.append(node('span', 'mono', '#' + part.seq + ' · ' + clockTime(part.timestamp)));
-        row.append(node('span', '', JSON.stringify(isToolCall ? part.payload?.tool_call_delta || {} : part.payload?.text || '')));
+        row.append(node('span', '', JSON.stringify(isReasoning ? reasoningChunk(part) : isToolCall ? part.payload?.tool_call_delta || {} : part.payload?.text || '')));
         if (part.payload?.raw_chunk) row.append(textDisclosure('查看原始流消息', part.payload.raw_chunk, 'raw-chunk-' + part.seq));
         row.append(jsonDisclosure(part));
         rows.append(row);
@@ -332,7 +403,7 @@ function renderEvent(item) {
     case 'model_stream_other':
       badge.textContent = 'STREAM'; title.textContent = '其他原始流消息';
       summary(payload.raw_chunk?.trim() === 'data: [DONE]' ? '流结束标记' :
-        '没有文本或工具调用片段');
+        '未包含可显示的正文、推理或工具调用');
       content.append(textDisclosure('查看原始流消息', payload.raw_chunk || '', 'raw-chunk-' + record.seq));
       break;
     case 'model_response': {

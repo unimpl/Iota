@@ -228,6 +228,9 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 		}
 		emitEvent(emit, requestRecord)
 		response, err := a.provider.Stream(ctx, request, func(delta Delta) {
+			if delta.Reasoning != "" {
+				emitEvent(emit, Event{Type: EventReasoningDelta, Turn: turn, Reasoning: delta.Reasoning, RawChunk: delta.RawChunk})
+			}
 			if delta.Text != "" {
 				emitEvent(emit, Event{Type: EventTextDelta, Turn: turn, Text: delta.Text, RawChunk: delta.RawChunk})
 			}
@@ -235,7 +238,7 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 				call := *delta.ToolCall
 				emitEvent(emit, Event{Type: EventToolCallDelta, Turn: turn, ToolCallDelta: &call, RawChunk: delta.RawChunk})
 			}
-			if delta.RawChunk != "" && delta.Text == "" && delta.ToolCall == nil {
+			if delta.RawChunk != "" && delta.Reasoning == "" && delta.Text == "" && delta.ToolCall == nil {
 				emitEvent(emit, Event{Type: EventStreamOther, Turn: turn, RawChunk: delta.RawChunk})
 			}
 		})
