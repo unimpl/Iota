@@ -238,7 +238,13 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 				call := *delta.ToolCall
 				emitEvent(emit, Event{Type: EventToolCallDelta, Turn: turn, ToolCallDelta: &call, RawChunk: delta.RawChunk})
 			}
-			if delta.RawChunk != "" && delta.Reasoning == "" && delta.Text == "" && delta.ToolCall == nil {
+			if delta.FinishReason != "" {
+				emitEvent(emit, Event{Type: EventStreamFinish, Turn: turn, Reason: delta.FinishReason, Usage: delta.Usage, RawChunk: delta.RawChunk})
+			}
+			if delta.StreamDone {
+				emitEvent(emit, Event{Type: EventStreamDone, Turn: turn, RawChunk: delta.RawChunk})
+			}
+			if delta.RawChunk != "" && delta.Reasoning == "" && delta.Text == "" && delta.ToolCall == nil && delta.FinishReason == "" && !delta.StreamDone {
 				emitEvent(emit, Event{Type: EventStreamOther, Turn: turn, RawChunk: delta.RawChunk})
 			}
 		})

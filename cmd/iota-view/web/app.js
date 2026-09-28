@@ -80,42 +80,76 @@ function highlightedJSON(value) {
   return { code, text };
 }
 
+function copyableCodeView(label, code, copyText) {
+  const view = node('div', 'json-view');
+  const toolbar = node('div', 'json-toolbar');
+  toolbar.append(node('span', 'json-toolbar-label', label));
+  const copy = node('button', 'json-copy');
+  copy.type = 'button';
+  copy.setAttribute('aria-label', '复制' + label);
+  copy.title = '复制';
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.setAttribute('viewBox', '0 0 24 24');
+  icon.setAttribute('fill', 'none');
+  icon.setAttribute('stroke', 'currentColor');
+  icon.setAttribute('stroke-width', '1.8');
+  icon.setAttribute('stroke-linecap', 'round');
+  icon.setAttribute('stroke-linejoin', 'round');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'M8 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm-4 2H3a1 1 0 0 0-1 1v13a2 2 0 0 0 2 2h11');
+  icon.append(path);
+  const copyLabel = node('span', '', '复制');
+  copyLabel.setAttribute('aria-live', 'polite');
+  copy.append(icon, copyLabel);
+  toolbar.append(copy);
+  copy.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(copyText);
+      copyLabel.textContent = '已复制';
+    } catch {
+      copyLabel.textContent = '复制失败';
+    }
+  });
+  const pre = node('pre', 'json-pre');
+  pre.append(code);
+  view.append(toolbar, pre);
+  return view;
+}
+
 function jsonDisclosure(record) {
   return disclosure('查看 JSON · #' + record.seq, 'json-' + record.seq, () => {
-    const view = node('div', 'json-view');
-    const toolbar = node('div', 'json-toolbar');
-    toolbar.append(node('span', 'json-toolbar-label', '事件 #' + record.seq));
-    const copy = node('button', 'json-copy');
-    copy.type = 'button';
-    copy.setAttribute('aria-label', '复制事件 #' + record.seq + ' 的 JSON');
-    copy.title = '复制 JSON';
-    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    icon.setAttribute('viewBox', '0 0 24 24');
-    icon.setAttribute('fill', 'none');
-    icon.setAttribute('stroke', 'currentColor');
-    icon.setAttribute('stroke-width', '1.8');
-    icon.setAttribute('stroke-linecap', 'round');
-    icon.setAttribute('stroke-linejoin', 'round');
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', 'M8 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm-4 2H3a1 1 0 0 0-1 1v13a2 2 0 0 0 2 2h11');
-    icon.append(path);
-    const copyLabel = node('span', '', '复制');
-    copyLabel.setAttribute('aria-live', 'polite');
-    copy.append(icon, copyLabel);
-    toolbar.append(copy);
     const { code, text } = highlightedJSON(record);
-    copy.addEventListener('click', async () => {
+    return copyableCodeView('事件 #' + record.seq + ' 的 JSON', code, text);
+  });
+}
+
+function rawStreamDisclosure(record) {
+  return disclosure('查看原始流消息', 'raw-chunk-' + record.seq, () => {
+    const raw = record.payload?.raw_chunk || '';
+    const data = /^(data:[ \t]*)(.*)$/s.exec(raw);
+    let code;
+    if (data) {
       try {
-        await navigator.clipboard.writeText(text);
-        copyLabel.textContent = '已复制';
+        code = highlightedJSON(JSON.parse(data[2])).code;
+        code.prepend(document.createTextNode(data[1]));
       } catch {
-        copyLabel.textContent = '复制失败';
+        // Keep non-JSON stream markers and malformed messages unchanged.
       }
-    });
-    const pre = node('pre', 'json-pre');
-    pre.append(code);
-    view.append(toolbar, pre);
-    return view;
+    }
+    return copyableCodeView('原始流消息 · #' + record.seq, code || node('code', 'json-code', raw || '（空）'), raw);
+  });
+}
+
+function rawRequestDisclosure(record) {
+  return disclosure('查看原始请求体', 'raw-request-' + record.seq, () => {
+    const raw = record.payload?.raw_request || '';
+    let code;
+    try {
+      code = highlightedJSON(JSON.parse(raw)).code;
+    } catch {
+      // Keep malformed request bodies unchanged.
+    }
+    return copyableCodeView('原始请求体 · #' + record.seq, code || node('code', 'json-code', raw || '（空）'), raw);
   });
 }
 
@@ -355,7 +389,7 @@ function renderEvent(item, turnKey, list) {
         const row = node('div', 'chunk-row');
         row.append(node('span', 'mono', '#' + part.seq + ' · ' + clockTime(part.timestamp)));
         row.append(node('span', '', JSON.stringify(isReasoning ? reasoningChunk(part) : isToolCall ? part.payload?.tool_call_delta || {} : part.payload?.text || '')));
-        if (part.payload?.raw_chunk) row.append(textDisclosure('查看原始流消息', part.payload.raw_chunk, 'raw-chunk-' + part.seq));
+        if (part.payload?.raw_chunk) row.append(rawStreamDisclosure(part));
         row.append(jsonDisclosure(part));
         rows.append(row);
       }
@@ -396,16 +430,33 @@ function renderEvent(item, turnKey, list) {
       badge.textContent = 'MODEL'; title.textContent = '向模型发送请求';
       const request = payload.request || {};
       summary((request.model || '模型') + ' · ' + (request.messages?.length || 0) + ' 条消息 · ' + (request.tools?.length || 0) + ' 个可用工具');
-      if (payload.raw_request) content.append(textDisclosure('查看原始请求体', payload.raw_request, 'raw-request-' + record.seq));
+      if (payload.raw_request) content.append(rawRequestDisclosure(record));
       content.append(disclosure('查看请求内容', 'request-' + record.seq, () => renderRequest(request, record.seq)));
       break;
     }
-    case 'model_stream_other':
-      badge.textContent = 'STREAM'; title.textContent = '其他原始流消息';
-      summary(payload.raw_chunk?.trim() === 'data: [DONE]' ? '流结束标记' :
-        '未包含可显示的正文、推理或工具调用');
-      content.append(textDisclosure('查看原始流消息', payload.raw_chunk || '', 'raw-chunk-' + record.seq));
+    case 'model_stream_finish':
+    case 'model_stream_done':
+    case 'model_stream_other': {
+      const raw = payload.raw_chunk?.trim() || '';
+      let chunk;
+      if (record.type === 'model_stream_other' && raw.startsWith('data:') && raw !== 'data: [DONE]') {
+        try { chunk = JSON.parse(raw.slice(5).trim()); } catch { /* Keep unknown raw messages. */ }
+      }
+      const reason = payload.reason || chunk?.choices?.find(choice => choice.finish_reason)?.finish_reason;
+      const usage = payload.usage || chunk?.usage;
+      if (record.type === 'model_stream_done' || raw === 'data: [DONE]') {
+        badge.textContent = 'DONE'; title.textContent = '模型流传输结束';
+        summary('服务端发送 [DONE] 标记。');
+      } else if (record.type === 'model_stream_finish' || reason) {
+        badge.textContent = 'FINISH'; title.textContent = '模型结束生成';
+        summary('结束原因 ' + (reason || '未知') + (usage ? ' · 输入 ' + usage.prompt_tokens + ' / 输出 ' + usage.completion_tokens + ' / 合计 ' + usage.total_tokens + ' tokens' : ''));
+      } else {
+        badge.textContent = 'STREAM'; title.textContent = '其他原始流消息';
+        summary('未包含可显示的正文、推理或工具调用');
+      }
+      content.append(rawStreamDisclosure(record));
       break;
+    }
     case 'model_response': {
       badge.textContent = 'MODEL'; title.textContent = '模型完成本轮生成';
       const usage = payload.usage;

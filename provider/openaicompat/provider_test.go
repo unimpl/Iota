@@ -45,8 +45,14 @@ func TestStreamTextAndFragmentedToolCall(t *testing.T) {
 	var deltas strings.Builder
 	var toolCallDeltas []iota.ToolCallDelta
 	var rawChunks []string
+	var finishReason string
+	var streamDone bool
 	response, err := provider.Stream(context.Background(), iota.Request{Model: "test", Messages: []iota.Message{{Role: iota.RoleUser, Content: "go"}}}, func(delta iota.Delta) {
 		deltas.WriteString(delta.Text)
+		if delta.FinishReason != "" {
+			finishReason = delta.FinishReason
+		}
+		streamDone = streamDone || delta.StreamDone
 		if delta.RawChunk != "" {
 			rawChunks = append(rawChunks, delta.RawChunk)
 		}
@@ -67,8 +73,8 @@ func TestStreamTextAndFragmentedToolCall(t *testing.T) {
 	if sentBody := <-receivedBody; string(encodedBody) != sentBody || !strings.Contains(sentBody, `"stream":true`) {
 		t.Fatalf("raw request differs from sent body: %q / %q", encodedBody, sentBody)
 	}
-	if len(rawChunks) != 5 || !strings.Contains(rawChunks[0], `"content":"hi "`) ||
-		!strings.Contains(rawChunks[3], `"usage"`) || rawChunks[4] != "data: [DONE]" {
+	if len(rawChunks) != 6 || !strings.Contains(rawChunks[0], `"content":"hi "`) ||
+		!strings.Contains(rawChunks[4], `"usage"`) || rawChunks[5] != "data: [DONE]" || finishReason != "tool_calls" || !streamDone {
 		t.Fatalf("raw chunks = %q", rawChunks)
 	}
 	if len(response.ToolCalls) != 1 || response.ToolCalls[0].Name != "read" || string(response.ToolCalls[0].Arguments) != `{"path":"x"}` {
@@ -136,13 +142,25 @@ func TestConsumeStreamEmitsReasoningWithoutDuplicatingDetails(t *testing.T) {
 	if response.Content != "42" || response.StopReason != "stop" {
 		t.Fatalf("response = %+v", response)
 	}
-	if len(deltas) != 5 || deltas[0].Reasoning != "The" || deltas[1].Reasoning != " answer" ||
-		deltas[2].Reasoning != " is" || deltas[3].Text != "42" || deltas[4].RawChunk != "data: [DONE]" {
+	if len(deltas) != 6 || deltas[0].Reasoning != "The" || deltas[1].Reasoning != " answer" ||
+		deltas[2].Reasoning != " is" || deltas[3].Text != "42" || deltas[4].FinishReason != "stop" || !deltas[5].StreamDone {
 		t.Fatalf("deltas = %+v", deltas)
 	}
 	for _, delta := range deltas[:3] {
 		if delta.Text != "" || delta.RawChunk == "" {
 			t.Fatalf("reasoning delta = %+v", delta)
 		}
+	}
+}
+
+func TestConsumeStreamFinishCarriesUsage(t *testing.T) {
+	stream := strings.NewReader("data: {\"choices\":[{\"index\":0,\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":530,\"completion_tokens\":32,\"total_tokens\":562}}\n\ndata: [DONE]\n\n")
+	var deltas []iota.Delta
+	response, err := consumeStream(stream, func(delta iota.Delta) { deltas = append(deltas, delta) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deltas) != 2 || deltas[0].FinishReason != "stop" || deltas[0].Usage == nil || deltas[0].Usage.TotalTokens != 562 || !deltas[1].StreamDone || response.Usage == nil || response.Usage.TotalTokens != 562 {
+		t.Fatalf("deltas=%+v response=%+v", deltas, response)
 	}
 }

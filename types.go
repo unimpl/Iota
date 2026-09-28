@@ -62,10 +62,13 @@ type Response struct {
 }
 
 type Delta struct {
-	Text      string
-	Reasoning string
-	ToolCall  *ToolCallDelta
-	RawChunk  string
+	Text         string
+	Reasoning    string
+	ToolCall     *ToolCallDelta
+	FinishReason string
+	StreamDone   bool
+	Usage        *Usage
+	RawChunk     string
 }
 
 type ToolCallDelta struct {
@@ -92,6 +95,8 @@ const (
 	EventModelRequest   EventType = "model_request"
 	EventModelResponse  EventType = "model_response"
 	EventStreamOther    EventType = "model_stream_other"
+	EventStreamFinish   EventType = "model_stream_finish"
+	EventStreamDone     EventType = "model_stream_done"
 	EventTextDelta      EventType = "text_delta"
 	EventReasoningDelta EventType = "reasoning_delta"
 	EventToolCallDelta  EventType = "tool_call_delta"

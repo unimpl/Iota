@@ -96,6 +96,45 @@ func TestAgentEmitsReasoningAsItsOwnEvent(t *testing.T) {
 	}
 }
 
+func TestAgentEmitsStreamEndEvents(t *testing.T) {
+	provider := &fakeProvider{
+		responses: []Response{{StopReason: "stop"}},
+		deltas: []Delta{
+			{FinishReason: "stop", Usage: &Usage{PromptTokens: 530, CompletionTokens: 32, TotalTokens: 562}, RawChunk: `data: {"choices":[{"finish_reason":"stop","delta":{}}]}`},
+			{StreamDone: true, RawChunk: "data: [DONE]"},
+		},
+	}
+	agent, err := New(Config{Provider: provider, Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []Event
+	_, err = agent.Run(context.Background(), "hi", func(event Event) { events = append(events, event) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finish, done, other int
+	for _, event := range events {
+		switch event.Type {
+		case EventStreamFinish:
+			finish++
+			if event.Reason != "stop" || event.Usage == nil || event.Usage.TotalTokens != 562 || event.RawChunk == "" {
+				t.Fatalf("finish event = %+v", event)
+			}
+		case EventStreamDone:
+			done++
+			if event.RawChunk != "data: [DONE]" {
+				t.Fatalf("done event = %+v", event)
+			}
+		case EventStreamOther:
+			other++
+		}
+	}
+	if finish != 1 || done != 1 || other != 0 {
+		t.Fatalf("finish=%d done=%d other=%d", finish, done, other)
+	}
+}
+
 func TestAgentToolLoopAndErrors(t *testing.T) {
 	calls := []ToolCall{
 		{ID: "one", Name: "echo", Arguments: json.RawMessage(`{"value":"a"}`)},

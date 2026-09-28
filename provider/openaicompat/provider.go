@@ -207,7 +207,7 @@ func consumeStream(reader io.Reader, emit func(iota.Delta)) (iota.Response, erro
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
 			if emit != nil {
-				emit(iota.Delta{RawChunk: line})
+				emit(iota.Delta{StreamDone: true, RawChunk: line})
 			}
 			done = true
 			break
@@ -282,6 +282,10 @@ func consumeStream(reader io.Reader, emit func(iota.Delta)) (iota.Response, erro
 			}
 			if choice.FinishReason != nil {
 				response.StopReason = *choice.FinishReason
+				if emit != nil && *choice.FinishReason != "" {
+					emit(iota.Delta{FinishReason: *choice.FinishReason, Usage: chunk.Usage, RawChunk: line})
+					emitted = true
+				}
 			}
 		}
 		if emit != nil && !emitted {
