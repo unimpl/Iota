@@ -11,6 +11,7 @@ import (
 	iota "github.com/unimpl/Iota"
 )
 
+// editSchema 要求提供路径和替换文本，并拒绝未知字段；new_text 允许为空以支持删除。
 var editSchema = json.RawMessage(`{
   "type":"object",
   "properties":{
@@ -22,12 +23,16 @@ var editSchema = json.RawMessage(`{
   "additionalProperties":false
 }`)
 
+// NewEdit 创建精确文本替换工具；要求原文本只出现一次，避免误改其他位置。
+// 目标路径可为绝对路径，写入会覆盖该文件的原有内容。
 func NewEdit(cwd string) iota.Tool {
 	return iota.Tool{
 		Name:        "edit",
 		Description: "Replace exactly one literal text occurrence in a UTF-8 file. Fails if the text is absent or appears more than once.",
 		Schema:      editSchema,
+		// 先确认唯一匹配，再在写入前检查取消状态，降低误改风险。
 		Execute: func(ctx context.Context, raw json.RawMessage) (string, error) {
+			// args 只保存本次替换的路径及文本，不在调用之间共享。
 			var args struct {
 				Path    string `json:"path"`
 				OldText string `json:"old_text"`

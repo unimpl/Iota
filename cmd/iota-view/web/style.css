@@ -1,3 +1,4 @@
+/* 统一页面颜色和字体；语义色供连接状态、事件类型及错误提示复用。 */
 :root { color-scheme: light; --paper:#f7f7f4; --white:#fff; --ink:#202824; --muted:#68736e; --line:#e1e5e0; --green:#2e7051; --green-bg:#eaf3eb; --red:#a0433c; --red-bg:#f9edeb; --blue:#415c77; --mono:ui-monospace,SFMono-Regular,Consolas,monospace; --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
 * { box-sizing:border-box; }
 body { margin:0; color:var(--ink); background:var(--paper); font-family:var(--sans); font-size:14px; }
@@ -40,6 +41,7 @@ summary { width:max-content; max-width:100%; color:var(--green); font-size:12px;
 summary:hover { text-decoration:underline; text-underline-offset:3px; }
 pre { margin:10px 0 0; padding:14px; max-height:480px; overflow:auto; border-radius:7px; background:#f3f5f1; color:#344139; white-space:pre-wrap; overflow-wrap:anywhere; font:11px/1.6 var(--mono); tab-size:2; }
 .empty { padding:50px 0; color:var(--muted); line-height:1.6; }
+/* 小屏幕将侧栏改为覆盖层，切换时不挤压时间线。 */
 @media (max-width:700px) { .sidebar { position:fixed; z-index:10; left:0; top:64px; height:calc(100vh - 64px); width:min(82vw,300px); box-shadow:10px 10px 30px rgba(35,52,39,.1); } .shell.sidebar-hidden .sidebar { transform:translateX(-105%); width:min(82vw,300px); } .topbar { padding:0 16px; } .content { padding:30px 19px 80px; } }
 .filename { font:12px var(--mono); }
 .timeline-counts { display:flex; align-items:baseline; flex-wrap:wrap; gap:6px 16px; margin:30px 0 18px; color:var(--muted); font-size:12px; }
@@ -103,4 +105,5 @@ pre { margin:10px 0 0; padding:14px; max-height:480px; overflow:auto; border-rad
 .json-number { color:#78529a; }
 .json-literal { color:#9a5b28; font-weight:600; }
 .json-punctuation { color:#697a71; }
+/* 紧凑时间线在窄屏缩短序号轨道，并把片段详情改为单列。 */
 @media (max-width:700px) { .timeline-counts { margin-top:22px; } .event-entry { grid-template-columns:65px 15px minmax(0,1fr); } .event-rail { padding-right:5px; font-size:10px; } .event-time { font-size:9px; letter-spacing:-.04em; } .event-dot { width:15px; } .event-dot::before { left:7px; } .event-dot::after { left:3px; } .event-content { margin-left:5px; padding:12px; } .event-head { flex-wrap:wrap; gap:6px; } .event-title { font-size:13px; } .chunk-row { grid-template-columns:1fr; gap:2px; } .request-message { grid-template-columns:58px minmax(0,1fr); } }

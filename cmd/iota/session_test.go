@@ -11,6 +11,7 @@ import (
 	iota "github.com/unimpl/Iota"
 )
 
+// TestSessionLogRecordsOrderedEvents 验证日志权限、事件顺序和递增序号。
 func TestSessionLogRecordsOrderedEvents(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

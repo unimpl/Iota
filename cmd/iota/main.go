@@ -19,8 +19,10 @@ import (
 	builtins "github.com/unimpl/Iota/tools"
 )
 
+// defaultSystemPrompt 给未配置项目规则时的 Agent 提供基本行为约束。
 const defaultSystemPrompt = `You are a concise coding agent. Inspect relevant files before changing them. Use tools only when needed, report tool errors accurately, and finish with a clear result.`
 
+// options 是合并文件、环境变量和命令行参数后的运行配置。
 type options struct {
 	prompt   string
 	model    string
@@ -33,10 +35,13 @@ type options struct {
 	timeout  time.Duration
 }
 
+// main 把 CLI 退出码交给操作系统；可测试的控制流程保留在 run 中。
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
+// run 初始化模型、工具与会话日志，再按输入来源选择单次或交互模式。
+// 参数错误返回 2，执行错误返回 1，用户中断的单次模式返回 130。
 func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	opts, err := parseOptions(args, stderr)
 	if err != nil {
@@ -98,6 +103,7 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "iota:", err)
 		return 1
 	}
+	// 即使运行失败也尝试写入结束事件并关闭日志，避免查看器看到悬空会话。
 	defer func() {
 		if err := log.write("", "session_end", nil); err != nil {
 			fmt.Fprintln(stderr, "iota: session recording incomplete:", err)
@@ -129,6 +135,7 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	return interactive(agent, signals, stdin, stdout, stderr, log)
 }
 
+// parseOptions 加载本地配置，再交给可注入依赖的解析函数处理覆盖关系。
 func parseOptions(args []string, stderr io.Writer) (options, error) {
 	config, err := loadConfig()
 	if err != nil {
@@ -137,6 +144,8 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 	return parseOptionsWithConfig(args, stderr, config, os.LookupEnv)
 }
 
+// parseOptionsWithConfig 按文件、环境变量、命令行的顺序应用配置。
+// 最后校验轮数和超时，避免无效值进入执行循环。
 func parseOptionsWithConfig(args []string, stderr io.Writer, config fileConfig, lookupEnv func(string) (string, bool)) (options, error) {
 	opts, err := optionsFromConfig(config)
 	if err != nil {
@@ -170,10 +179,36 @@ func parseOptionsWithConfig(args []string, stderr io.Writer, config fileConfig, 
 	return opts, nil
 }
 
+// loadSystemPrompt 读取用户目录与工作目录中的提示文件，再追加命令行提示和 AGENTS.md。
 func loadSystemPrompt(cwd, additional string) (string, error) {
-	parts := []string{defaultSystemPrompt}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	return loadSystemPromptFrom(cwd, home, additional)
+}
+
+// loadSystemPromptFrom 按基础提示、额外提示、追加文件、项目规则的顺序组装提示。
+// 两类 .iota 文件分别按项目优先查找；空 SYSTEM.md 使用默认提示，但不回退用户文件。
+func loadSystemPromptFrom(cwd, home, additional string) (string, error) {
+	base := defaultSystemPrompt
+	custom, found, err := readSystemPromptFile(cwd, home, "SYSTEM.md")
+	if err != nil {
+		return "", err
+	}
+	if found && strings.TrimSpace(custom) != "" {
+		base = custom
+	}
+	parts := []string{base}
 	if strings.TrimSpace(additional) != "" {
 		parts = append(parts, additional)
+	}
+	appendPrompt, found, err := readSystemPromptFile(cwd, home, "APPEND_SYSTEM.md")
+	if err != nil {
+		return "", err
+	}
+	if found && strings.TrimSpace(appendPrompt) != "" {
+		parts = append(parts, appendPrompt)
 	}
 	data, err := os.ReadFile(filepath.Join(cwd, "AGENTS.md"))
 	if err == nil {
@@ -184,6 +219,27 @@ func loadSystemPrompt(cwd, additional string) (string, error) {
 	return strings.Join(parts, "\n\n"), nil
 }
 
+// readSystemPromptFile 优先读取工作目录的 .iota 文件，缺失时才查找用户目录。
+// 已找到但无法读取的文件会报错，避免悄悄使用较低优先级的提示。
+func readSystemPromptFile(cwd, home, name string) (string, bool, error) {
+	paths := []string{filepath.Join(cwd, ".iota", name)}
+	if home != "" {
+		paths = append(paths, filepath.Join(home, ".iota", name))
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return string(data), true, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", false, fmt.Errorf("read %s: %w", path, err)
+		}
+	}
+	return "", false, nil
+}
+
+// createTools 按配置顺序选择内置工具，并去掉重复名称。
+// 空列表或 none 明确禁用工具，未知名称会报错。
 func createTools(cwd, list string, timeout time.Duration) ([]iota.Tool, error) {
 	available := map[string]iota.Tool{
 		"read":  builtins.NewRead(cwd),
@@ -210,6 +266,8 @@ func createTools(cwd, list string, timeout time.Duration) ([]iota.Tool, error) {
 	return result, nil
 }
 
+// interactive 逐行读取终端输入，处理退出与重置命令后运行普通提示。
+// 扫描放在独立协程中，主协程才能同时响应中断信号。
 func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, stdout, stderr io.Writer, log *sessionLog) int {
 	lines := make(chan string)
 	errorsChannel := make(chan error, 1)
@@ -256,6 +314,7 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 	}
 }
 
+// execute 运行一次提示并转发文本和工具事件；中断时等待 Agent 完成清理。
 func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout, stderr io.Writer, single bool, log *sessionLog) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -268,6 +327,7 @@ func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout,
 			return 1
 		}
 	}
+	// outcome 把运行结果和错误一起从工作协程传回，避免阻塞信号处理。
 	type outcome struct {
 		result iota.RunResult
 		err    error
@@ -314,6 +374,7 @@ func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout,
 	}
 }
 
+// formatRunError 在上下文容量错误后提示可用的重置操作。
 func formatRunError(err error) string {
 	message := err.Error()
 	lower := strings.ToLower(message)
@@ -323,6 +384,7 @@ func formatRunError(err error) string {
 	return message
 }
 
+// isTerminal 根据文件模式区分交互输入与管道输入。
 func isTerminal(file *os.File) bool {
 	info, err := file.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0

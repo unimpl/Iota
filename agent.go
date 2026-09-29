@@ -14,14 +14,20 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
+// DefaultMaxTurns 限制单次运行的模型往返次数，避免工具循环无限持续。
 const DefaultMaxTurns = 20
 
+// 运行状态错误分别对应并发冲突、轮数限制和不完整的模型输出。
 var (
-	ErrBusy         = errors.New("agent is already running")
-	ErrMaxTurns     = errors.New("maximum turns reached")
+	// ErrBusy 表示同一 Agent 正在运行，不能同时启动新任务或重置历史。
+	ErrBusy = errors.New("agent is already running")
+	// ErrMaxTurns 表示未得到最终回复就用完了单次运行的轮数。
+	ErrMaxTurns = errors.New("maximum turns reached")
+	// ErrOutputLength 表示模型回复因输出限制而不完整，不能执行其中的工具调用。
 	ErrOutputLength = errors.New("model response was truncated by the output limit")
 )
 
+// Config 配置 Agent 的模型、工具和单次运行上限；MaxTurns 为零时使用默认值。
 type Config struct {
 	Provider     Provider
 	Model        string
@@ -30,11 +36,14 @@ type Config struct {
 	MaxTurns     int
 }
 
+// compiledTool 缓存参数 schema 的编译结果，避免每次工具调用重复编译。
 type compiledTool struct {
 	tool   Tool
 	schema *jsonschema.Schema
 }
 
+// Agent 持有对话历史和工具定义；同一实例一次只能执行一个 Run。
+// mu 保护运行状态和消息，避免外部读取与执行并发时发生数据竞争。
 type Agent struct {
 	provider     Provider
 	model        string
@@ -47,8 +56,10 @@ type Agent struct {
 	messages []Message
 }
 
+// toolNamePattern 限制发送给模型的工具名，避免服务端不接受特殊字符。
 var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// New 校验配置并预编译所有工具 schema，让无效工具在运行前失败。
 func New(config Config) (*Agent, error) {
 	if config.Provider == nil {
 		return nil, errors.New("provider is required")
@@ -107,6 +118,8 @@ func New(config Config) (*Agent, error) {
 	}, nil
 }
 
+// rejectExternalReferences 禁止 schema 通过外部引用加载资源，避免校验时依赖网络或文件。
+// 解析后还要确认没有额外的 JSON 内容。
 func rejectExternalReferences(schema json.RawMessage) error {
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(schema))
@@ -123,6 +136,7 @@ func rejectExternalReferences(schema json.RawMessage) error {
 	return nil
 }
 
+// ensureNoExternalReference 递归检查对象和数组；仅允许指向当前 schema 的 # 引用。
 func ensureNoExternalReference(value any) error {
 	switch value := value.(type) {
 	case map[string]any:
@@ -147,12 +161,14 @@ func ensureNoExternalReference(value any) error {
 	return nil
 }
 
+// Messages 返回历史副本，防止调用方修改 Agent 内部保存的消息切片。
 func (a *Agent) Messages() []Message {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return cloneMessages(a.messages)
 }
 
+// Reset 清空内存历史；运行期间拒绝重置，以免破坏正在构造的模型请求。
 func (a *Agent) Reset() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -163,6 +179,8 @@ func (a *Agent) Reset() error {
 	return nil
 }
 
+// Run 执行一次用户输入，逐轮请求模型并按顺序执行工具，直到模型给出最终回复。
+// 同一 Agent 不允许并发 Run；取消时仍为已发出的工具调用补齐结果消息。
 func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result RunResult, runErr error) {
 	a.mu.Lock()
 	if a.running {
@@ -178,6 +196,7 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 	reason := "error"
 	emitEvent(emit, Event{Type: EventRunStart})
 	emitEvent(emit, Event{Type: EventMessageAdded, Message: cloneMessagePointer(userMessage)})
+	// 无论正常结束还是中途报错，都释放运行锁并发出结束事件。
 	defer func() {
 		a.mu.Lock()
 		result.Messages = cloneMessages(a.messages[start:])
@@ -212,6 +231,7 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 			Messages:     a.Messages(),
 			Tools:        definitions,
 		}
+		// 事件记录使用独立副本，避免观察者意外改动实际发送的请求。
 		requestEvent := request
 		requestEvent.Messages = cloneMessages(request.Messages)
 		requestEvent.Tools = append([]ToolDefinition(nil), request.Tools...)
@@ -254,6 +274,7 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 		if response.StopReason == "length" {
 			return result, ErrOutputLength
 		}
+		// 先检查整批调用，再执行其中任何一个，避免部分执行后才发现无效调用。
 		if err := validateToolCalls(response.ToolCalls); err != nil {
 			return result, fmt.Errorf("invalid provider response: %w", err)
 		}
@@ -295,6 +316,7 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 	return result, ErrMaxTurns
 }
 
+// validateToolCalls 检查调用 ID、名称和 JSON 参数；重复 ID 会破坏结果配对。
 func validateToolCalls(calls []ToolCall) error {
 	seen := make(map[string]struct{}, len(calls))
 	for index, call := range calls {
@@ -315,6 +337,8 @@ func validateToolCalls(calls []ToolCall) error {
 	return nil
 }
 
+// executeTool 校验参数后执行指定工具，并将失败转成模型可见的错误文本。
+// 返回的布尔值表示工具错误，不表示整个 Agent 运行失败。
 func (a *Agent) executeTool(ctx context.Context, call ToolCall) (string, bool) {
 	var selected *compiledTool
 	for i := range a.tools {
@@ -342,6 +366,7 @@ func (a *Agent) executeTool(ctx context.Context, call ToolCall) (string, bool) {
 	return text, false
 }
 
+// appendMessage 同时更新对话历史和事件流，保证日志能还原模型看到的消息顺序。
 func (a *Agent) appendMessage(message Message, turn int, emit EmitFunc) {
 	a.mu.Lock()
 	a.messages = append(a.messages, message)
@@ -349,18 +374,21 @@ func (a *Agent) appendMessage(message Message, turn int, emit EmitFunc) {
 	emitEvent(emit, Event{Type: EventMessageAdded, Turn: turn, Message: cloneMessagePointer(message)})
 }
 
+// appendCancelledResults 为尚未执行的调用补上取消结果，维持调用与工具消息一一对应。
 func (a *Agent) appendCancelledResults(calls []ToolCall, turn int, emit EmitFunc) {
 	for _, call := range calls {
 		a.appendMessage(Message{Role: RoleTool, Content: "operation canceled before tool execution", ToolCallID: call.ID, ToolName: call.Name, IsError: true}, turn, emit)
 	}
 }
 
+// emitEvent 允许调用方不提供观察回调，不改变 Agent 的执行逻辑。
 func emitEvent(emit EmitFunc, event Event) {
 	if emit != nil {
 		emit(event)
 	}
 }
 
+// cloneMessages 复制消息及其工具调用，防止外部修改内部历史。
 func cloneMessages(messages []Message) []Message {
 	result := make([]Message, len(messages))
 	for i, message := range messages {
@@ -370,6 +398,7 @@ func cloneMessages(messages []Message) []Message {
 	return result
 }
 
+// cloneToolCalls 还会复制原始 JSON 字节，避免仅复制切片头造成共享。
 func cloneToolCalls(calls []ToolCall) []ToolCall {
 	result := make([]ToolCall, len(calls))
 	for i, call := range calls {
@@ -379,12 +408,14 @@ func cloneToolCalls(calls []ToolCall) []ToolCall {
 	return result
 }
 
+// cloneToolCallPointer 为事件创建独立调用对象，避免观察者改动原参数。
 func cloneToolCallPointer(call ToolCall) *ToolCall {
 	copy := call
 	copy.Arguments = append(json.RawMessage(nil), call.Arguments...)
 	return &copy
 }
 
+// cloneMessagePointer 为事件创建独立消息对象，避免观察者改动历史。
 func cloneMessagePointer(message Message) *Message {
 	copy := message
 	copy.ToolCalls = cloneToolCalls(message.ToolCalls)

@@ -1,3 +1,4 @@
+// 页面节点只查询一次；重绘时复用外层容器并替换其中的内容。
 const shell = document.getElementById('shell');
 const sessionNav = document.getElementById('sessions');
 const sessionCount = document.getElementById('session-count');
@@ -6,20 +7,27 @@ const timeline = document.getElementById('timeline');
 const connection = document.getElementById('connection');
 const toggle = document.getElementById('toggle-sidebar');
 
+// 会话列表由目录轮询更新，不能把它当作事件流的完整内容。
 let sessions = [];
+// selected 与 source 对应同一会话；切换时先关闭旧连接。
 let selected = null;
 let source = null;
+// records 只保存当前会话已收到的事件，重置通知会清空它。
 let records = [];
+// renderPending 防止密集流事件触发重复渲染。
 let renderPending = false;
+// 展开状态按事件和轮次分别记录，重绘后才能保持用户的查看位置。
 const expanded = new Set();
 const expandedTurns = new Set();
 
+// 侧栏切换同步更新无障碍状态，供键盘和屏幕阅读器使用。
 toggle.addEventListener('click', () => {
   const hidden = shell.classList.toggle('sidebar-hidden');
   toggle.setAttribute('aria-expanded', String(!hidden));
   toggle.setAttribute('aria-label', hidden ? '显示 session 列表' : '隐藏 session 列表');
 });
 
+// node 统一创建纯文本节点，避免把日志内容当作 HTML 执行。
 function node(tag, className, value) {
   const element = document.createElement(tag);
   if (className) element.className = className;
@@ -27,22 +35,27 @@ function node(tag, className, value) {
   return element;
 }
 
+// formatTime 为列表显示本地时间；无效时间保留原值以便排查日志。
 function formatTime(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value || '' : date.toLocaleString('zh-CN', { hour12: false });
 }
 
+// clockTime 保留毫秒，便于区分同一秒内密集到达的流事件。
 function clockTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value || '';
   return date.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + String(date.getMilliseconds()).padStart(3, '0');
 }
 
+// setConnection 同时更新文字和样式，避免页面显示与连接状态不一致。
 function setConnection(label, state = '') {
   connection.textContent = label;
   connection.className = 'connection ' + state;
 }
 
+// disclosure 懒加载展开内容，避免大量原始请求和 JSON 同时生成 DOM。
+// key 保留重绘前的展开状态。
 function disclosure(label, key, build) {
   const wrap = node('details', 'disclosure');
   wrap.open = expanded.has(key);
@@ -61,10 +74,12 @@ function disclosure(label, key, build) {
   return wrap;
 }
 
+// textDisclosure 将文本或对象放入可展开的预格式区域。
 function textDisclosure(label, value, key) {
   return disclosure(label, key, () => node('pre', '', typeof value === 'string' ? value || '（空）' : JSON.stringify(value, null, 2)));
 }
 
+// highlightedJSON 用文本节点和 span 着色，不使用 innerHTML 处理日志数据。
 function highlightedJSON(value) {
   const code = node('code', 'json-code');
   const text = JSON.stringify(value, null, 2);
@@ -80,6 +95,7 @@ function highlightedJSON(value) {
   return { code, text };
 }
 
+// copyableCodeView 保留原文复制能力；高亮后的 DOM 只负责显示。
 function copyableCodeView(label, code, copyText) {
   const view = node('div', 'json-view');
   const toolbar = node('div', 'json-toolbar');
@@ -116,6 +132,7 @@ function copyableCodeView(label, code, copyText) {
   return view;
 }
 
+// jsonDisclosure 提供单条事件的完整 JSON，便于核对摘要是否遗漏字段。
 function jsonDisclosure(record) {
   return disclosure('查看 JSON · #' + record.seq, 'json-' + record.seq, () => {
     const { code, text } = highlightedJSON(record);
@@ -123,6 +140,7 @@ function jsonDisclosure(record) {
   });
 }
 
+// rawStreamDisclosure 尝试高亮 SSE 中的 JSON；无法解析时仍展示原始文本。
 function rawStreamDisclosure(record) {
   return disclosure('查看原始流消息', 'raw-chunk-' + record.seq, () => {
     const raw = record.payload?.raw_chunk || '';
@@ -133,13 +151,14 @@ function rawStreamDisclosure(record) {
         code = highlightedJSON(JSON.parse(data[2])).code;
         code.prepend(document.createTextNode(data[1]));
       } catch {
-        // Keep non-JSON stream markers and malformed messages unchanged.
+        // 非 JSON 标记或损坏的消息直接按原文显示，避免丢失排查线索。
       }
     }
     return copyableCodeView('原始流消息 · #' + record.seq, code || node('code', 'json-code', raw || '（空）'), raw);
   });
 }
 
+// rawRequestDisclosure 展示真正发送的请求体，而非重新拼装的页面摘要。
 function rawRequestDisclosure(record) {
   return disclosure('查看原始请求体', 'raw-request-' + record.seq, () => {
     const raw = record.payload?.raw_request || '';
@@ -147,12 +166,13 @@ function rawRequestDisclosure(record) {
     try {
       code = highlightedJSON(JSON.parse(raw)).code;
     } catch {
-      // Keep malformed request bodies unchanged.
+      // 无法解析的请求体仍保留原文，方便定位编码错误。
     }
     return copyableCodeView('原始请求体 · #' + record.seq, code || node('code', 'json-code', raw || '（空）'), raw);
   });
 }
 
+// refreshSessions 定期刷新目录摘要；当前会话被删除时关闭旧连接并选择新会话。
 async function refreshSessions() {
   try {
     const response = await fetch('/api/sessions', { cache: 'no-store' });
@@ -174,6 +194,7 @@ async function refreshSessions() {
   }
 }
 
+// renderSessionList 重新生成导航，并标明当前选中的会话。
 function renderSessionList() {
   sessionNav.replaceChildren();
   if (!sessions.length) {
@@ -192,6 +213,7 @@ function renderSessionList() {
   }
 }
 
+// selectSession 关闭上一条 SSE 连接并清空旧事件，避免不同会话的记录混在一起。
 function selectSession(name) {
   if (selected === name) return;
   source?.close();
@@ -217,12 +239,14 @@ function selectSession(name) {
   }
 }
 
+// scheduleRender 合并短时间内的多次流事件更新，减少重复构建整条时间线。
 function scheduleRender() {
   if (renderPending) return;
   renderPending = true;
   setTimeout(() => { renderPending = false; render(); }, 100);
 }
 
+// reasoningChunk 兼容独立推理事件及旧日志中的原始流字段，避免重复显示推理内容。
 function reasoningChunk(record) {
   if (record.type === 'reasoning_delta') return record.payload?.reasoning || '';
   if (record.type !== 'model_stream_other') return '';
@@ -242,6 +266,7 @@ function reasoningChunk(record) {
   }
 }
 
+// groupedEvents 仅合并同一任务、同一轮的连续片段，保留其他事件的原始顺序。
 function groupedEvents() {
   const result = [];
   for (const record of records) {
@@ -261,6 +286,7 @@ function groupedEvents() {
   return result;
 }
 
+// render 根据当前会话记录重建摘要和时间线，同时恢复展开状态。
 function render() {
   header.replaceChildren();
   timeline.replaceChildren();
@@ -310,6 +336,7 @@ function render() {
   timeline.append(list);
 }
 
+// renderEvent 按事件类型生成摘要；详细 JSON 保持可展开，避免默认淹没时间线。
 function renderEvent(item, turnKey, list) {
   const record = item.record || item.records[0];
   const last = item.records?.at(-1) || record;
@@ -440,7 +467,7 @@ function renderEvent(item, turnKey, list) {
       const raw = payload.raw_chunk?.trim() || '';
       let chunk;
       if (record.type === 'model_stream_other' && raw.startsWith('data:') && raw !== 'data: [DONE]') {
-        try { chunk = JSON.parse(raw.slice(5).trim()); } catch { /* Keep unknown raw messages. */ }
+        try { chunk = JSON.parse(raw.slice(5).trim()); } catch { /* 未知流消息仍按原文展示。 */ }
       }
       const reason = payload.reason || chunk?.choices?.find(choice => choice.finish_reason)?.finish_reason;
       const usage = payload.usage || chunk?.usage;
@@ -497,6 +524,7 @@ function renderEvent(item, turnKey, list) {
   return entry;
 }
 
+// renderRequest 展示系统提示、消息和工具摘要，并保留完整请求 JSON 供核对。
 function renderRequest(request, seq) {
   const body = node('div', 'request-view');
   if (request.system_prompt) {
@@ -518,5 +546,6 @@ function renderRequest(request, seq) {
   return body;
 }
 
+// 首次加载后持续轮询会话列表；单个会话的事件由 SSE 实时跟随。
 refreshSessions();
 setInterval(refreshSessions, 2000);

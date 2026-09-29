@@ -10,6 +10,8 @@ import (
 	"github.com/unimpl/Iota/provider/openaicompat"
 )
 
+// main 展示最小用法：创建兼容接口 Provider，运行一次提示并打印流式文本。
+// 需要设置 OPENAI_API_KEY 和 IOTA_MODEL；可用 OPENAI_BASE_URL 指向兼容服务。
 func main() {
 	provider, err := openaicompat.New(openaicompat.Config{
 		BaseURL: os.Getenv("OPENAI_BASE_URL"),

@@ -15,8 +15,10 @@ import (
 	"github.com/unimpl/Iota/provider/openaicompat"
 )
 
+// defaultTools 是未显式配置时开放给模型的内置工具列表。
 const defaultTools = "read,write,edit,bash"
 
+// fileConfig 对应 TOML 配置；指针和切片保留“未设置”与“显式置空”的区别。
 type fileConfig struct {
 	Model    string   `toml:"model"`
 	BaseURL  string   `toml:"base_url"`
@@ -28,6 +30,7 @@ type fileConfig struct {
 	Timeout  string   `toml:"timeout"`
 }
 
+// loadConfig 获取用户目录和当前目录，供配置查找使用。
 func loadConfig() (fileConfig, error) {
 	home, homeErr := os.UserHomeDir()
 	cwd, err := os.Getwd()
@@ -40,6 +43,8 @@ func loadConfig() (fileConfig, error) {
 	return loadConfigFrom(home, cwd)
 }
 
+// loadConfigFrom 优先读取用户配置，缺失时才读取工作目录配置。
+// 只接受已知字段，避免配置拼写错误被静默忽略。
 func loadConfigFrom(home, cwd string) (fileConfig, error) {
 	paths := make([]string, 0, 2)
 	if home != "" {
@@ -72,6 +77,7 @@ func loadConfigFrom(home, cwd string) (fileConfig, error) {
 	return fileConfig{}, nil
 }
 
+// optionsFromConfig 用默认值补齐文件配置；空工具数组表示禁用全部工具。
 func optionsFromConfig(config fileConfig) (options, error) {
 	opts := options{
 		model:    config.Model,
@@ -102,7 +108,10 @@ func optionsFromConfig(config fileConfig) (options, error) {
 	return opts, nil
 }
 
+// applyEnvironment 用环境变量覆盖文件配置，并解析 API key 的变量引用。
+// 查找函数可替换，便于测试配置优先级而不依赖进程环境。
 func applyEnvironment(opts *options, lookup func(string) (string, bool)) error {
+	// setString 只在变量存在时覆盖，允许显式空值覆盖配置文件。
 	setString := func(name string, target *string) {
 		if value, ok := lookup(name); ok {
 			*target = value
@@ -139,6 +148,7 @@ func applyEnvironment(opts *options, lookup func(string) (string, bool)) error {
 	return nil
 }
 
+// environmentReference 只识别合法的 $NAME 或 ${NAME}，避免将普通 key 误当变量。
 func environmentReference(value string) (string, bool) {
 	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
 		value = value[2 : len(value)-1]

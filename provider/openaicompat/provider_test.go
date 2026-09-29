@@ -13,6 +13,7 @@ import (
 	iota "github.com/unimpl/Iota"
 )
 
+// TestStreamTextAndFragmentedToolCall 验证请求编码、工具片段拼接和原始流事件均可还原。
 func TestStreamTextAndFragmentedToolCall(t *testing.T) {
 	receivedBody := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -90,6 +91,7 @@ func TestStreamTextAndFragmentedToolCall(t *testing.T) {
 	}
 }
 
+// TestStreamRejectsUnexpectedEOFAndHTTPError 区分流意外结束与服务端 HTTP 错误。
 func TestStreamRejectsUnexpectedEOFAndHTTPError(t *testing.T) {
 	t.Run("eof", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -116,6 +118,7 @@ func TestStreamRejectsUnexpectedEOFAndHTTPError(t *testing.T) {
 	})
 }
 
+// TestStreamAllowsMissingUsage 确认兼容服务端不返回用量时仍可得到完整回复。
 func TestStreamAllowsMissingUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
@@ -129,6 +132,7 @@ func TestStreamAllowsMissingUsage(t *testing.T) {
 	}
 }
 
+// TestConsumeStreamEmitsReasoningWithoutDuplicatingDetails 防止多个推理字段重复显示同一内容。
 func TestConsumeStreamEmitsReasoningWithoutDuplicatingDetails(t *testing.T) {
 	stream := strings.NewReader("data: {\"choices\":[{\"delta\":{\"reasoning\":\"The\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"The\"}]}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\" answer\"}]}}]}\n\n" +
@@ -153,6 +157,7 @@ func TestConsumeStreamEmitsReasoningWithoutDuplicatingDetails(t *testing.T) {
 	}
 }
 
+// TestConsumeStreamFinishCarriesUsage 确认结束片段和汇总回复都保留令牌用量。
 func TestConsumeStreamFinishCarriesUsage(t *testing.T) {
 	stream := strings.NewReader("data: {\"choices\":[{\"index\":0,\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":530,\"completion_tokens\":32,\"total_tokens\":562}}\n\ndata: [DONE]\n\n")
 	var deltas []iota.Delta

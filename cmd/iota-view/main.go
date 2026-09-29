@@ -21,13 +21,18 @@ import (
 	"time"
 )
 
+// webFiles 将静态页面嵌入可执行文件，查看器启动时不依赖外部资源目录。
+//
 //go:embed web/*
 var webFiles embed.FS
 
+// sessionFilename 只允许本程序生成的会话文件名，防止查询参数访问任意路径。
 var sessionFilename = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$`)
 
+// defaultPort 是查看器首选本地端口；被占用时会顺延查找。
 const defaultPort = 9280
 
+// sessionInfo 是会话列表返回给页面的摘要，不包含完整事件内容。
 type sessionInfo struct {
 	Name      string `json:"name"`
 	CreatedAt string `json:"created_at"`
@@ -35,6 +40,7 @@ type sessionInfo struct {
 	Title     string `json:"title,omitempty"`
 }
 
+// sessionTitle 从首条用户消息提取标题，按字符而非字节截取中文。
 func sessionTitle(content string) string {
 	text := strings.Join(strings.Fields(content), " ")
 	characters := []rune(text)
@@ -44,6 +50,7 @@ func sessionTitle(content string) string {
 	return text
 }
 
+// main 只在本机监听查看器，默认读取用户目录下的会话日志。
 func main() {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -67,6 +74,7 @@ func main() {
 	log.Fatal(http.Serve(listener, newHandler(root)))
 }
 
+// listenAvailablePort 只跳过已占用的端口；其他监听错误应立即暴露。
 func listenAvailablePort(start int) (net.Listener, error) {
 	for port := start; port <= 65535; port++ {
 		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -80,10 +88,13 @@ func listenAvailablePort(start int) (net.Listener, error) {
 	return nil, fmt.Errorf("no available port from %d to 65535", start)
 }
 
+// newHandler 提供嵌入页面、会话列表和持续跟随的事件流。
+// 事件接口只接受匹配文件名且确认为普通文件的日志。
 func newHandler(folder string) http.Handler {
 	mux := http.NewServeMux()
 	static, _ := fs.Sub(webFiles, "web")
 	mux.Handle("GET /", http.FileServer(http.FS(static)))
+	// 列表只读取每份日志的开头和首条用户消息，避免一次加载全部事件。
 	mux.HandleFunc("GET /api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		entries, err := os.ReadDir(folder)
 		if errors.Is(err, os.ErrNotExist) {
@@ -101,6 +112,7 @@ func newHandler(folder string) http.Handler {
 			if err != nil {
 				continue
 			}
+			// 只解码首行需要的字段，避免读取无关的大型事件内容。
 			var first struct {
 				Timestamp string `json:"timestamp"`
 				Payload   struct {
@@ -115,6 +127,7 @@ func newHandler(folder string) http.Handler {
 			}
 			session := sessionInfo{Name: entry.Name(), CreatedAt: first.Timestamp, Model: first.Payload.Model}
 			for {
+				// 后续记录只需事件类型和首条用户消息，其他字段跳过。
 				var record struct {
 					Type    string `json:"type"`
 					Payload struct {
@@ -135,6 +148,7 @@ func newHandler(folder string) http.Handler {
 			file.Close()
 			sessions = append(sessions, session)
 		}
+		// 时间相同时用文件名确定顺序，避免列表刷新时条目跳动。
 		sort.Slice(sessions, func(i, j int) bool {
 			if sessions[i].CreatedAt == sessions[j].CreatedAt {
 				return sessions[i].Name > sessions[j].Name
@@ -144,6 +158,7 @@ func newHandler(folder string) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(sessions)
 	})
+	// 事件流只发送完整 JSONL 行；未写完的尾行留到下次轮询。
 	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
 		if !sessionFilename.MatchString(name) {
@@ -190,7 +205,7 @@ func newHandler(folder string) http.Handler {
 			for {
 				line, err := reader.ReadBytes('\n')
 				if err != nil {
-					break // Leave an unfinished line for the next read.
+					break // 未写完的一行留到下次读取，避免页面收到不完整 JSON。
 				}
 				offset += int64(len(line))
 				if json.Valid(line) {

@@ -16,8 +16,10 @@ import (
 	iota "github.com/unimpl/Iota"
 )
 
+// DefaultTimeout 为单次模型请求设置上限，避免流连接无限等待。
 const DefaultTimeout = 120 * time.Second
 
+// Config 指定兼容接口地址、认证和 HTTP 行为；空地址使用 OpenAI 默认地址。
 type Config struct {
 	BaseURL    string
 	APIKey     string
@@ -25,6 +27,7 @@ type Config struct {
 	Timeout    time.Duration
 }
 
+// Provider 持有已解析的请求地址与客户端；每次 Stream 单独设置超时上下文。
 type Provider struct {
 	endpoint string
 	apiKey   string
@@ -32,6 +35,8 @@ type Provider struct {
 	timeout  time.Duration
 }
 
+// New 校验基础地址和超时，预先组成 chat/completions 端点。
+// 自定义 HTTPClient 可用于代理、测试或特殊传输配置。
 func New(config Config) (*Provider, error) {
 	baseURL := strings.TrimSpace(config.BaseURL)
 	if baseURL == "" {
@@ -59,6 +64,7 @@ func New(config Config) (*Provider, error) {
 	}, nil
 }
 
+// requestBody 对应兼容接口的请求体；始终启用流式响应并请求 usage。
 type requestBody struct {
 	Model    string        `json:"model"`
 	Messages []message     `json:"messages"`
@@ -67,10 +73,12 @@ type requestBody struct {
 	Options  streamOptions `json:"stream_options"`
 }
 
+// streamOptions 控制流末尾是否返回令牌用量；服务端仍可能省略用量。
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
+// message 是服务端需要的消息格式，工具结果通过 ToolCallID 关联调用。
 type message struct {
 	Role       string         `json:"role"`
 	Content    string         `json:"content,omitempty"`
@@ -78,17 +86,20 @@ type message struct {
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
 
+// toolWrapper 将本地工具定义包装为兼容接口的 function 工具。
 type toolWrapper struct {
 	Type     string       `json:"type"`
 	Function functionTool `json:"function"`
 }
 
+// functionTool 保存发给模型的名称、说明和原始 JSON Schema。
 type functionTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
+// wireToolCall 同时表示请求中的完整调用和响应流中的调用片段。
 type wireToolCall struct {
 	Index    int          `json:"index,omitempty"`
 	ID       string       `json:"id,omitempty"`
@@ -96,11 +107,14 @@ type wireToolCall struct {
 	Function wireFunction `json:"function"`
 }
 
+// wireFunction 的 Name 和 Arguments 在流式响应中可能逐段拼接。
 type wireFunction struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 }
 
+// streamChunk 解码单条 SSE 数据事件；兼容不同服务端的推理字段。
+// Choices、Usage 和 Error 都可能缺席，因此消费端要逐项检查。
 type streamChunk struct {
 	Choices []struct {
 		Delta struct {
@@ -119,6 +133,7 @@ type streamChunk struct {
 	} `json:"error"`
 }
 
+// Stream 发送请求并消费 SSE 数据；HTTP 错误正文最多读取 64 KiB，防止错误体过大。
 func (p *Provider) Stream(ctx context.Context, request iota.Request, emit func(iota.Delta)) (iota.Response, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
@@ -152,10 +167,12 @@ func (p *Provider) Stream(ctx context.Context, request iota.Request, emit func(i
 	return consumeStream(httpResponse.Body, emit)
 }
 
+// EncodeRequest 暴露实际请求编码，供 Agent 记录与发送内容一致的原始请求体。
 func (p *Provider) EncodeRequest(request iota.Request) ([]byte, error) {
 	return encodeRequest(request)
 }
 
+// encodeRequest 将通用消息和工具转换为 chat/completions 格式，保留消息顺序。
 func encodeRequest(request iota.Request) ([]byte, error) {
 	messages := make([]message, 0, len(request.Messages)+1)
 	if request.SystemPrompt != "" {
@@ -188,10 +205,13 @@ func encodeRequest(request iota.Request) ([]byte, error) {
 	})
 }
 
+// consumeStream 逐条解析 SSE 事件，发出片段通知并组装完整回复。
+// 工具调用按 Index 拼接，只有收到 [DONE] 且参数完整时才返回成功。
 func consumeStream(reader io.Reader, emit func(iota.Delta)) (iota.Response, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 	var response iota.Response
+	// 同一工具调用的名称与参数会拆成多个事件，按索引归并后再校验。
 	builders := make(map[int]*wireToolCall)
 	maxIndex := -1
 	done := false
@@ -231,6 +251,7 @@ func consumeStream(reader io.Reader, emit func(iota.Delta)) (iota.Response, erro
 			response.Usage = &usage
 		}
 		for _, choice := range chunk.Choices {
+			// 各兼容服务端使用不同的推理字段；按优先级取一个，避免重复展示。
 			reasoning := ""
 			if choice.Delta.Reasoning != nil {
 				reasoning = *choice.Delta.Reasoning
@@ -239,6 +260,7 @@ func consumeStream(reader io.Reader, emit func(iota.Delta)) (iota.Response, erro
 				reasoning = *choice.Delta.ReasoningContent
 			}
 			if reasoning == "" && len(choice.Delta.ReasoningDetails) > 0 {
+				// 仅提取推理文本；服务端可能同时提供其他元数据字段。
 				var details []struct {
 					Text string `json:"text"`
 				}
@@ -301,6 +323,7 @@ func consumeStream(reader io.Reader, emit func(iota.Delta)) (iota.Response, erro
 	if response.StopReason == "tool_calls" && maxIndex < 0 {
 		return iota.Response{}, errors.New("provider ended with tool_calls but returned no tool calls")
 	}
+	// 要求索引连续，避免遗漏某个调用却继续执行其余调用。
 	for index := 0; index <= maxIndex; index++ {
 		call := builders[index]
 		if call == nil || call.ID == "" || call.Function.Name == "" {

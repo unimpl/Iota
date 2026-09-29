@@ -10,6 +10,7 @@ import (
 	"testing"
 )
 
+// fakeProvider 用预置回复模拟流式服务，并用锁支持并发运行测试。
 type fakeProvider struct {
 	mu        sync.Mutex
 	responses []Response
@@ -18,6 +19,7 @@ type fakeProvider struct {
 	block     <-chan struct{}
 }
 
+// Stream 记录请求并发出预置片段；无回复时可阻塞到取消，测试 Agent 的并发控制。
 func (p *fakeProvider) Stream(ctx context.Context, request Request, emit func(Delta)) (Response, error) {
 	p.mu.Lock()
 	p.requests = append(p.requests, request)
@@ -45,6 +47,7 @@ func (p *fakeProvider) Stream(ctx context.Context, request Request, emit func(De
 	return response, nil
 }
 
+// TestAgentDirectAnswer 验证无工具回复只需一轮，并产生完整的生命周期事件。
 func TestAgentDirectAnswer(t *testing.T) {
 	provider := &fakeProvider{responses: []Response{{Content: "hello", StopReason: "stop"}}}
 	agent, err := New(Config{Provider: provider, Model: "test"})
@@ -65,6 +68,7 @@ func TestAgentDirectAnswer(t *testing.T) {
 	}
 }
 
+// TestAgentEmitsReasoningAsItsOwnEvent 确认推理片段不会误记为普通流消息。
 func TestAgentEmitsReasoningAsItsOwnEvent(t *testing.T) {
 	provider := &fakeProvider{
 		responses: []Response{{Content: "answer", StopReason: "stop"}},
@@ -96,6 +100,7 @@ func TestAgentEmitsReasoningAsItsOwnEvent(t *testing.T) {
 	}
 }
 
+// TestAgentEmitsStreamEndEvents 区分生成结束原因与服务端的最终 DONE 标记。
 func TestAgentEmitsStreamEndEvents(t *testing.T) {
 	provider := &fakeProvider{
 		responses: []Response{{StopReason: "stop"}},
@@ -135,6 +140,7 @@ func TestAgentEmitsStreamEndEvents(t *testing.T) {
 	}
 }
 
+// TestAgentToolLoopAndErrors 验证工具失败仍作为消息送回模型，且调用 ID 保持配对。
 func TestAgentToolLoopAndErrors(t *testing.T) {
 	calls := []ToolCall{
 		{ID: "one", Name: "echo", Arguments: json.RawMessage(`{"value":"a"}`)},
@@ -175,6 +181,7 @@ func TestAgentToolLoopAndErrors(t *testing.T) {
 	}
 }
 
+// TestAgentEmitsToolCallFragmentsBeforeResponse 确认观察者先看到流片段，再看到完整回复。
 func TestAgentEmitsToolCallFragmentsBeforeResponse(t *testing.T) {
 	provider := &fakeProvider{
 		responses: []Response{{
@@ -201,6 +208,7 @@ func TestAgentEmitsToolCallFragmentsBeforeResponse(t *testing.T) {
 	t.Fatalf("missing tool call fragment: %+v", events)
 }
 
+// TestAgentRejectsConcurrentRun 验证运行期间不能开启第二次运行或清空历史。
 func TestAgentRejectsConcurrentRun(t *testing.T) {
 	block := make(chan struct{})
 	provider := &fakeProvider{block: block}
@@ -233,6 +241,7 @@ func TestAgentRejectsConcurrentRun(t *testing.T) {
 	}
 }
 
+// TestAgentMaxTurnsAndLength 验证轮数耗尽与回复截断分开处理，后者不执行工具。
 func TestAgentMaxTurnsAndLength(t *testing.T) {
 	provider := &fakeProvider{responses: []Response{
 		{ToolCalls: []ToolCall{{ID: "1", Name: "missing", Arguments: json.RawMessage(`{}`)}}},
@@ -252,6 +261,7 @@ func TestAgentMaxTurnsAndLength(t *testing.T) {
 	}
 }
 
+// TestAgentCancellationCompletesToolResults 验证取消后仍补齐未执行调用的工具消息。
 func TestAgentCancellationCompletesToolResults(t *testing.T) {
 	provider := &fakeProvider{responses: []Response{{ToolCalls: []ToolCall{
 		{ID: "1", Name: "wait", Arguments: json.RawMessage(`{}`)},
@@ -285,6 +295,7 @@ func TestAgentCancellationCompletesToolResults(t *testing.T) {
 	}
 }
 
+// TestNewRejectsExternalSchemaReference 防止工具 schema 依赖外部资源。
 func TestNewRejectsExternalSchemaReference(t *testing.T) {
 	_, err := New(Config{Provider: &fakeProvider{}, Model: "test", Tools: []Tool{{
 		Name: "bad", Schema: json.RawMessage(`{"$ref":"https://example.com/schema"}`), Execute: func(context.Context, json.RawMessage) (string, error) { return "", nil },
@@ -294,6 +305,7 @@ func TestNewRejectsExternalSchemaReference(t *testing.T) {
 	}
 }
 
+// TestAgentRejectsMalformedToolCallsBeforeExecution 确认整批调用先校验再执行。
 func TestAgentRejectsMalformedToolCallsBeforeExecution(t *testing.T) {
 	executed := false
 	provider := &fakeProvider{responses: []Response{{ToolCalls: []ToolCall{

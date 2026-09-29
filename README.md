@@ -36,6 +36,8 @@ timeout = "2m"
 
 `api_key` 支持 `$NAME` 和 `${NAME}` 形式的环境变量引用；变量不存在时会报错。`OPENAI_API_KEY` 仍可直接覆盖它。其他可用环境变量为 `IOTA_MODEL`、`OPENAI_BASE_URL`、`IOTA_CWD`、`IOTA_SYSTEM`、`IOTA_TOOLS`、`IOTA_MAX_TURNS` 和 `IOTA_TIMEOUT`。`IOTA_TOOLS=none` 禁用工具。未知 TOML 字段、非法时长和非正数轮数会作为配置错误退出。
 
+CLI 支持 `~/.iota/SYSTEM.md` 和工作目录中的 `.iota/SYSTEM.md`：找到的文件替换内置系统提示。`APPEND_SYSTEM.md` 放在对应的 `.iota` 目录中，用于追加提示。两种文件分别查找，均以工作目录为先、用户目录为后；工作目录的空 `SYSTEM.md` 会使用内置提示，不再查找用户目录的同名文件。`--system`、配置文件中的 `system` 和 `IOTA_SYSTEM` 仍作为额外提示，位于 `APPEND_SYSTEM.md` 之前。工作目录根部的 `AGENTS.md` 最后加入。读取已存在的提示文件失败时，CLI 会报错退出。
+
 交互模式逐行接收任务，支持 `/reset` 和 `/exit`。模型文本写入 stdout，提示符、工具状态和错误写入 stderr。
 
 每次启动 CLI 都会创建一个 session ID，并将记录写入 `~/.iota/sessions/YYYY-MM-DD-<uuid>.jsonl`。交互模式的多次任务共用该文件，每次任务有独立 run ID。文件包含用户消息、模型请求、文本增量、完整回复、工具调用与结果、用量、取消、错误和重置事件。工具内部的实时输出不单独记录；工具最终返回的内容会记录。文件只允许当前用户读写。CLI 会在 stderr 打印文件路径。
@@ -61,7 +63,7 @@ go run ./cmd/iota-view --folder /path/to/sessions
 --tools       read,write,edit,bash 的逗号列表；none 表示禁用
 ```
 
-CLI 默认启用四个工具，并把工作目录根部的 `AGENTS.md` 加入系统提示。工具使用当前进程权限；项目不提供沙箱或操作审批。
+CLI 默认启用四个工具。工具使用当前进程权限；项目不提供沙箱或操作审批。
 
 ## SDK
 

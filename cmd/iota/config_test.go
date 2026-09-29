@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// TestLoadConfigPrefersHome 确认用户配置与项目配置同时存在时优先使用前者。
 func TestLoadConfigPrefersHome(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
@@ -24,6 +25,7 @@ func TestLoadConfigPrefersHome(t *testing.T) {
 	}
 }
 
+// TestLoadConfigFallsBackToWorkingDirectory 验证用户配置缺失时读取当前目录配置。
 func TestLoadConfigFallsBackToWorkingDirectory(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
@@ -38,6 +40,7 @@ func TestLoadConfigFallsBackToWorkingDirectory(t *testing.T) {
 	}
 }
 
+// TestLoadConfigDecodesValues 验证空工具列表和可选数值不会与缺省值混淆。
 func TestLoadConfigDecodesValues(t *testing.T) {
 	home := t.TempDir()
 	writeConfig(t, filepath.Join(home, ".iota", "config.toml"), `
@@ -56,6 +59,7 @@ timeout = "15s"
 	}
 }
 
+// TestLoadConfigRejectsUnknownKey 确保配置键拼写错误不会被静默忽略。
 func TestLoadConfigRejectsUnknownKey(t *testing.T) {
 	home := t.TempDir()
 	writeConfig(t, filepath.Join(home, ".iota", "config.toml"), `modle = "typo"`)
@@ -66,6 +70,7 @@ func TestLoadConfigRejectsUnknownKey(t *testing.T) {
 	}
 }
 
+// TestOptionPrecedence 验证命令行、环境变量、配置文件逐级覆盖的顺序。
 func TestOptionPrecedence(t *testing.T) {
 	maxTurns := 7
 	config := fileConfig{
@@ -112,6 +117,7 @@ func TestOptionPrecedence(t *testing.T) {
 	}
 }
 
+// TestAPIKeyEnvironmentReference 验证文件配置中的变量引用在运行时解析。
 func TestAPIKeyEnvironmentReference(t *testing.T) {
 	opts, err := optionsFromConfig(fileConfig{APIKey: "$API_KEY"})
 	if err != nil {
@@ -130,6 +136,7 @@ func TestAPIKeyEnvironmentReference(t *testing.T) {
 	}
 }
 
+// TestOpenAIAPIKeyOverridesConfigReference 确认显式环境变量优先于配置中的引用。
 func TestOpenAIAPIKeyOverridesConfigReference(t *testing.T) {
 	opts, err := optionsFromConfig(fileConfig{APIKey: "$MISSING_KEY"})
 	if err != nil {
@@ -148,6 +155,7 @@ func TestOpenAIAPIKeyOverridesConfigReference(t *testing.T) {
 	}
 }
 
+// TestEmptyToolListDisablesTools 确认显式空数组会禁用全部工具。
 func TestEmptyToolListDisablesTools(t *testing.T) {
 	opts, err := optionsFromConfig(fileConfig{Tools: []string{}})
 	if err != nil {
@@ -162,6 +170,7 @@ func TestEmptyToolListDisablesTools(t *testing.T) {
 	}
 }
 
+// writeConfig 创建测试配置及其父目录，避免测试依赖已有的本地文件。
 func writeConfig(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

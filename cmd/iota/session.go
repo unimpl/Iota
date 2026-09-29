@@ -12,8 +12,10 @@ import (
 	iota "github.com/unimpl/Iota"
 )
 
+// sessionFormatVersion 标记 JSONL 记录结构，供查看器和后续格式迁移识别。
 const sessionFormatVersion = 1
 
+// sessionLog 顺序写入会话事件；锁保护序号与文件写入，首个错误会被保留。
 type sessionLog struct {
 	mu   sync.Mutex
 	file *os.File
@@ -23,6 +25,7 @@ type sessionLog struct {
 	err  error
 }
 
+// sessionRecord 是单行 JSONL 的固定外壳；Payload 保存对应事件的具体内容。
 type sessionRecord struct {
 	Version   int    `json:"version"`
 	Sequence  uint64 `json:"seq"`
@@ -33,6 +36,7 @@ type sessionRecord struct {
 	Payload   any    `json:"payload,omitempty"`
 }
 
+// newSessionLog 在用户目录创建仅当前用户可读写的会话文件，并记录起始事件。
 func newSessionLog(model, cwd string) (*sessionLog, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -59,6 +63,7 @@ func newSessionLog(model, cwd string) (*sessionLog, error) {
 	return log, nil
 }
 
+// newUUID 生成随机 v4 UUID，用于避免同一天的会话文件名冲突。
 func newUUID() (string, error) {
 	var data [16]byte
 	if _, err := rand.Read(data[:]); err != nil {
@@ -69,6 +74,8 @@ func newUUID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", data[:4], data[4:6], data[6:8], data[8:10], data[10:]), nil
 }
 
+// write 原子地推进记录序号；写入失败后不再接受后续事件，避免日志出现断序。
+// nil 日志用于不需要记录的调用路径。
 func (l *sessionLog) write(runID, kind string, payload any) error {
 	if l == nil {
 		return nil
@@ -99,10 +106,12 @@ func (l *sessionLog) write(runID, kind string, payload any) error {
 	return nil
 }
 
+// event 将 Agent 事件包装为带运行 ID 的会话记录。
 func (l *sessionLog) event(runID string, event iota.Event) error {
 	return l.write(runID, string(event.Type), event)
 }
 
+// close 关闭会话文件；调用者应先写入 session_end 记录。
 func (l *sessionLog) close() error {
 	if l == nil {
 		return nil

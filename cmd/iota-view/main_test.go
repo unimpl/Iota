@@ -15,6 +15,7 @@ import (
 	"time"
 )
 
+// TestSessionListSortsByCreationAndStreamWaitsForCompleteLine 验证排序稳定且尾部半行不会提前推送。
 func TestSessionListSortsByCreationAndStreamWaitsForCompleteLine(t *testing.T) {
 	dir := t.TempDir()
 	older := "2026-09-01-00000000-0000-4000-8000-000000000001.jsonl"
@@ -102,6 +103,7 @@ func TestSessionListSortsByCreationAndStreamWaitsForCompleteLine(t *testing.T) {
 	}
 }
 
+// TestListenAvailablePortSkipsOccupiedPorts 验证查看器顺延跳过已占用端口。
 func TestListenAvailablePortSkipsOccupiedPorts(t *testing.T) {
 	first, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

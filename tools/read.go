@@ -11,6 +11,7 @@ import (
 	iota "github.com/unimpl/Iota"
 )
 
+// readSchema 限定读取参数；offset 和 limit 必须为正整数，省略时由工具提供默认值。
 var readSchema = json.RawMessage(`{
   "type":"object",
   "properties":{
@@ -22,12 +23,16 @@ var readSchema = json.RawMessage(`{
   "additionalProperties":false
 }`)
 
+// NewRead 创建带行号的文件读取工具，便于后续按位置查看或编辑。
+// 只接受 UTF-8 内容；输出受行数和字节数限制，不能据此判断已读完整个文件。
 func NewRead(cwd string) iota.Tool {
 	return iota.Tool{
 		Name:        "read",
 		Description: "Read a UTF-8 text file. offset is a 1-based line number and limit is a maximum number of lines.",
 		Schema:      readSchema,
+		// offset 从第 1 行开始；省略 limit 或超出上限时使用默认行数限制。
 		Execute: func(ctx context.Context, raw json.RawMessage) (string, error) {
+			// args 保存本次读取范围，避免不同调用互相影响。
 			var args struct {
 				Path   string `json:"path"`
 				Offset int    `json:"offset"`

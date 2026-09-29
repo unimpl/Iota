@@ -17,6 +17,7 @@ import (
 	"github.com/unimpl/Iota/provider/openaicompat"
 )
 
+// TestParseOptions 验证主要命令行参数的解析与类型转换。
 func TestParseOptions(t *testing.T) {
 	var stderr bytes.Buffer
 	opts, err := parseOptionsWithConfig(
@@ -33,8 +34,10 @@ func TestParseOptions(t *testing.T) {
 	}
 }
 
+// TestLoadSystemPrompt 验证内置、附加和项目规则都会进入系统提示。
 func TestLoadSystemPrompt(t *testing.T) {
 	cwd := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
 	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("project rule"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +52,72 @@ func TestLoadSystemPrompt(t *testing.T) {
 	}
 }
 
+// TestLoadSystemPromptFiles 验证两类提示文件分别按项目优先查找，并保持追加顺序。
+func TestLoadSystemPromptFiles(t *testing.T) {
+	cwd := t.TempDir()
+	home := t.TempDir()
+	projectSystem := filepath.Join(cwd, ".iota", "SYSTEM.md")
+	projectAppend := filepath.Join(cwd, ".iota", "APPEND_SYSTEM.md")
+	writePromptFile(t, filepath.Join(home, ".iota", "SYSTEM.md"), "home base")
+	writePromptFile(t, filepath.Join(home, ".iota", "APPEND_SYSTEM.md"), "home append")
+	writePromptFile(t, projectSystem, "project base")
+	writePromptFile(t, projectAppend, "project append")
+	writePromptFile(t, filepath.Join(cwd, "AGENTS.md"), "project rule")
+
+	for _, step := range []struct {
+		remove string
+		want   string
+	}{
+		{want: "project base\n\nflag extra\n\nproject append\n\nProject instructions from AGENTS.md:\nproject rule"},
+		{remove: projectAppend, want: "project base\n\nflag extra\n\nhome append\n\nProject instructions from AGENTS.md:\nproject rule"},
+		{remove: projectSystem, want: "home base\n\nflag extra\n\nhome append\n\nProject instructions from AGENTS.md:\nproject rule"},
+	} {
+		if step.remove != "" {
+			if err := os.Remove(step.remove); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := loadSystemPromptFrom(cwd, home, "flag extra")
+		if err != nil || got != step.want {
+			t.Fatalf("prompt=%q err=%v, want %q", got, err, step.want)
+		}
+	}
+}
+
+// TestLoadSystemPromptEmptyFileAndReadError 验证空替换文件回到默认值，读取失败会中止启动。
+func TestLoadSystemPromptEmptyFileAndReadError(t *testing.T) {
+	cwd := t.TempDir()
+	home := t.TempDir()
+	projectSystem := filepath.Join(cwd, ".iota", "SYSTEM.md")
+	writePromptFile(t, filepath.Join(home, ".iota", "SYSTEM.md"), "home base")
+	writePromptFile(t, projectSystem, "")
+	got, err := loadSystemPromptFrom(cwd, home, "")
+	if err != nil || got != defaultSystemPrompt {
+		t.Fatalf("prompt=%q err=%v", got, err)
+	}
+	if err := os.Remove(projectSystem); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(projectSystem, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSystemPromptFrom(cwd, home, ""); err == nil || !strings.Contains(err.Error(), projectSystem) {
+		t.Fatalf("got %v, want read error for %s", err, projectSystem)
+	}
+}
+
+// writePromptFile 创建测试提示及父目录，确保路径查找不依赖开发机配置。
+func writePromptFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCreateTools 验证工具顺序、去重和未知名称报错。
 func TestCreateTools(t *testing.T) {
 	tools, err := createTools(t.TempDir(), "read,bash,read", time.Second)
 	if err != nil {
@@ -62,6 +131,7 @@ func TestCreateTools(t *testing.T) {
 	}
 }
 
+// TestFormatRunErrorAddsResetHint 确认上下文容量错误会提示重置操作。
 func TestFormatRunErrorAddsResetHint(t *testing.T) {
 	message := formatRunError(&testError{"maximum context token length exceeded"})
 	if !strings.Contains(message, "/reset") {
@@ -69,6 +139,7 @@ func TestFormatRunErrorAddsResetHint(t *testing.T) {
 	}
 }
 
+// TestRunWithPipedInput 验证管道输入可触发单次运行并输出模型文本。
 func TestRunWithPipedInput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
@@ -93,6 +164,7 @@ func TestRunWithPipedInput(t *testing.T) {
 	}
 }
 
+// TestRunRejectsPromptWithPipedInput 防止同时从参数和管道获取提示而产生歧义。
 func TestRunRejectsPromptWithPipedInput(t *testing.T) {
 	stdin, err := os.CreateTemp(t.TempDir(), "prompt")
 	if err != nil {
@@ -106,6 +178,7 @@ func TestRunRejectsPromptWithPipedInput(t *testing.T) {
 	}
 }
 
+// TestRunWithPromptFlag 验证单次运行会记录原始请求、流事件及会话结束事件。
 func TestRunWithPromptFlag(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -182,6 +255,7 @@ func TestRunWithPromptFlag(t *testing.T) {
 	}
 }
 
+// TestInteractiveResetAndExit 验证交互命令能清空历史并正常退出。
 func TestInteractiveResetAndExit(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
@@ -213,6 +287,8 @@ func TestInteractiveResetAndExit(t *testing.T) {
 	}
 }
 
+// testError 为错误格式测试提供可控的消息文本。
 type testError struct{ message string }
 
+// Error 实现 error 接口，以便传入 formatRunError。
 func (e *testError) Error() string { return e.message }
