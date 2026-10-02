@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -14,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chzyer/readline"
 	iota "github.com/unimpl/Iota"
 	"github.com/unimpl/Iota/provider/openaicompat"
 	builtins "github.com/unimpl/Iota/tools"
@@ -266,33 +266,51 @@ func createTools(cwd, list string, timeout time.Duration) ([]iota.Tool, error) {
 	return result, nil
 }
 
-// interactive 逐行读取终端输入，处理退出与重置命令后运行普通提示。
-// 扫描放在独立协程中，主协程才能同时响应中断信号。
+// interactive 用行编辑器读取输入，按字符和显示宽度处理中文删除与光标移动。
+// 每次只读取一行，运行模型时恢复普通终端模式，以便继续响应中断信号。
 func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, stdout, stderr io.Writer, log *sessionLog) int {
-	lines := make(chan string)
-	errorsChannel := make(chan error, 1)
-	go func() {
-		scanner := bufio.NewScanner(stdin)
-		for scanner.Scan() {
-			lines <- scanner.Text()
+	input := readline.NewCancelableStdin(stdin)
+	config := inputConfig(stdin, stderr)
+	config.Stdin = input
+	editor, err := readline.NewEx(config)
+	if err != nil {
+		input.Close()
+		fmt.Fprintln(stderr, "iota: initialize input editor:", err)
+		return 1
+	}
+	closed := false
+	closeEditor := func() {
+		if closed {
+			return
 		}
-		errorsChannel <- scanner.Err()
-	}()
+		closed = true
+		input.Close()
+		if err := editor.Close(); err != nil {
+			fmt.Fprintln(stderr, "iota: restore terminal settings:", err)
+		}
+	}
+	defer closeEditor()
 	for {
-		fmt.Fprint(stderr, "> ")
+		result := make(chan readline.Result, 1)
+		go func() {
+			line, err := editor.Readline()
+			result <- readline.Result{Line: line, Error: err}
+		}()
 		select {
 		case <-signals:
+			closeEditor()
+			<-result
 			fmt.Fprintln(stderr)
 			return 0
-		case err := <-errorsChannel:
-			if err != nil {
-				fmt.Fprintln(stderr, "iota:", err)
+		case read := <-result:
+			if errors.Is(read.Error, io.EOF) || errors.Is(read.Error, readline.ErrInterrupt) {
+				return 0
+			}
+			if read.Error != nil {
+				fmt.Fprintln(stderr, "iota:", read.Error)
 				return 1
 			}
-			fmt.Fprintln(stderr)
-			return 0
-		case line := <-lines:
-			line = strings.TrimSpace(line)
+			line := strings.TrimSpace(read.Line)
 			switch line {
 			case "":
 				continue
@@ -335,12 +353,23 @@ func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout,
 	done := make(chan outcome, 1)
 	go func() {
 		recordingErrorReported := false
+		reasoningOpen := false
 		result, err := agent.Run(ctx, prompt, func(event iota.Event) {
 			if writeErr := log.event(runID, event); writeErr != nil && !recordingErrorReported {
 				fmt.Fprintln(stderr, "iota: session recording incomplete:", writeErr)
 				recordingErrorReported = true
 			}
+			if reasoningOpen && (event.Type == iota.EventTextDelta || event.Type == iota.EventToolCallDelta || event.Type == iota.EventModelResponse || event.Type == iota.EventRunEnd) {
+				fmt.Fprintln(stderr, "\n[/thinking]")
+				reasoningOpen = false
+			}
 			switch event.Type {
+			case iota.EventReasoningDelta:
+				if !reasoningOpen {
+					fmt.Fprintln(stderr, "[thinking]")
+					reasoningOpen = true
+				}
+				fmt.Fprint(stderr, event.Reasoning)
 			case iota.EventTextDelta:
 				fmt.Fprint(stdout, event.Text)
 			case iota.EventToolStart:

@@ -255,6 +255,42 @@ func TestRunWithPromptFlag(t *testing.T) {
 	}
 }
 
+// TestExecuteReasoning 验证推理片段连续显示，并在正文或错误前关闭标识。
+func TestExecuteReasoning(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failed=%t", failed), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先\"}}]}\n\n")
+				fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"思考\"}}]}\n\n")
+				if !failed {
+					fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"回答\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+				}
+			}))
+			defer server.Close()
+			provider, err := openaicompat.New(openaicompat.Config{BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			agent, err := iota.New(iota.Config{Provider: provider, Model: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			code := execute(agent, "question", make(chan os.Signal), &stdout, &stderr, false, nil)
+			wantCode, wantOutput := 0, "回答\n"
+			wantReasoning := "[thinking]\n先思考\n[/thinking]\n"
+			if failed {
+				wantCode, wantOutput = 1, "\n"
+				wantReasoning += "iota: unexpected EOF\n"
+			}
+			if code != wantCode || stdout.String() != wantOutput || stderr.String() != wantReasoning {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 // TestInteractiveResetAndExit 验证交互命令能清空历史并正常退出。
 func TestInteractiveResetAndExit(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
