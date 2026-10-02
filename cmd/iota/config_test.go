@@ -170,6 +170,33 @@ func TestEmptyToolListDisablesTools(t *testing.T) {
 	}
 }
 
+// TestSessionOptions 验证会话选择的配置覆盖与互斥检查。
+func TestSessionOptions(t *testing.T) {
+	save := false
+	var stderr bytes.Buffer
+	opts, err := parseOptionsWithConfig([]string{"--no-session=false", "--resume", "/sessions/selected.jsonl"}, &stderr,
+		fileConfig{SaveSession: &save}, func(string) (string, bool) { return "", false })
+	if err != nil || opts.noSession || opts.resume != "/sessions/selected.jsonl" {
+		t.Fatalf("options=%+v err=%v", opts, err)
+	}
+	if _, err := parseOptionsWithConfig([]string{"--no-session", "--resume", "session.jsonl"}, &stderr,
+		fileConfig{}, func(string) (string, bool) { return "", false }); err == nil {
+		t.Fatal("expected incompatible session flags")
+	}
+	opts, err = parseOptionsWithConfig(nil, &stderr, fileConfig{SaveSession: &save}, func(name string) (string, bool) {
+		if name == "IOTA_SAVE_SESSION" {
+			return "true", true
+		}
+		if name == "IOTA_RESUME" {
+			return "restored.jsonl", true
+		}
+		return "", false
+	})
+	if err != nil || opts.noSession || opts.resume != "restored.jsonl" {
+		t.Fatalf("options=%+v err=%v", opts, err)
+	}
+}
+
 // writeConfig 创建测试配置及其父目录，避免测试依赖已有的本地文件。
 func writeConfig(t *testing.T, path, contents string) {
 	t.Helper()

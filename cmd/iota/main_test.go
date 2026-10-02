@@ -164,6 +164,82 @@ func TestRunWithPipedInput(t *testing.T) {
 	}
 }
 
+// TestRunOptionalSession 验证 CLI 可关闭保存，或从 SDK 会话恢复后继续追加。
+func TestRunOptionalSession(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		t.Run(fmt.Sprintf("resume=%t", resume), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			var sessionPath string
+			if resume {
+				session, err := iota.NewSession(t.TempDir(), iota.SessionInfo{Model: "test"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				firstServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"first answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+				}))
+				defer firstServer.Close()
+				provider, err := openaicompat.New(openaicompat.Config{BaseURL: firstServer.URL})
+				if err != nil {
+					t.Fatal(err)
+				}
+				agent, err := iota.New(iota.Config{Provider: provider, Model: "test"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := session.Run(t.Context(), agent, "first question", nil); err != nil {
+					t.Fatal(err)
+				}
+				sessionPath = session.Path()
+				if err := session.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requests := make(chan []iota.Message, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var body struct {
+					Messages []iota.Message `json:"messages"`
+				}
+				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				requests <- body.Messages
+				fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			}))
+			defer server.Close()
+			stdin, err := os.Open(os.DevNull)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdin.Close()
+			args := []string{"--model", "test", "--base-url", server.URL, "--cwd", t.TempDir(), "--tools", "none", "-p", "next question"}
+			if resume {
+				args = append(args, "--resume", sessionPath)
+			} else {
+				args = append(args, "--no-session")
+			}
+			var stdout, stderr bytes.Buffer
+			if code := run(args, stdin, &stdout, &stderr); code != 0 || stdout.String() != "answer\n" {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			messages := <-requests
+			if resume {
+				if len(messages) != 4 || messages[1].Content != "first question" || messages[2].Content != "first answer" || messages[3].Content != "next question" {
+					t.Fatalf("messages=%+v", messages)
+				}
+			} else {
+				if strings.Contains(stderr.String(), "session:") {
+					t.Fatalf("stderr=%q", stderr.String())
+				}
+				if _, err := os.Stat(filepath.Join(home, ".iota", "sessions")); !os.IsNotExist(err) {
+					t.Fatalf("disabled session created directory: %v", err)
+				}
+			}
+		})
+	}
+}
+
 // TestRunRejectsPromptWithPipedInput 防止同时从参数和管道获取提示而产生歧义。
 func TestRunRejectsPromptWithPipedInput(t *testing.T) {
 	stdin, err := os.CreateTemp(t.TempDir(), "prompt")

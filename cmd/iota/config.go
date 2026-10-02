@@ -20,14 +20,16 @@ const defaultTools = "read,write,edit,bash"
 
 // fileConfig 对应 TOML 配置；指针和切片保留“未设置”与“显式置空”的区别。
 type fileConfig struct {
-	Model    string   `toml:"model"`
-	BaseURL  string   `toml:"base_url"`
-	APIKey   string   `toml:"api_key"`
-	CWD      string   `toml:"cwd"`
-	System   string   `toml:"system"`
-	Tools    []string `toml:"tools"`
-	MaxTurns *int     `toml:"max_turns"`
-	Timeout  string   `toml:"timeout"`
+	Model       string   `toml:"model"`
+	BaseURL     string   `toml:"base_url"`
+	APIKey      string   `toml:"api_key"`
+	CWD         string   `toml:"cwd"`
+	System      string   `toml:"system"`
+	Tools       []string `toml:"tools"`
+	MaxTurns    *int     `toml:"max_turns"`
+	Timeout     string   `toml:"timeout"`
+	SaveSession *bool    `toml:"save_session"`
+	Resume      string   `toml:"resume"`
 }
 
 // loadConfig 获取用户目录和当前目录，供配置查找使用。
@@ -88,6 +90,10 @@ func optionsFromConfig(config fileConfig) (options, error) {
 		tools:    defaultTools,
 		maxTurns: iota.DefaultMaxTurns,
 		timeout:  openaicompat.DefaultTimeout,
+		resume:   config.Resume,
+	}
+	if config.SaveSession != nil {
+		opts.noSession = !*config.SaveSession
 	}
 	if config.CWD != "" {
 		opts.cwd = config.CWD
@@ -131,6 +137,14 @@ func applyEnvironment(opts *options, lookup func(string) (string, bool)) error {
 	setString("IOTA_CWD", &opts.cwd)
 	setString("IOTA_SYSTEM", &opts.system)
 	setString("IOTA_TOOLS", &opts.tools)
+	setString("IOTA_RESUME", &opts.resume)
+	if value, ok := lookup("IOTA_SAVE_SESSION"); ok {
+		save, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("IOTA_SAVE_SESSION: %w", err)
+		}
+		opts.noSession = !save
+	}
 	if value, ok := lookup("IOTA_MAX_TURNS"); ok {
 		maxTurns, err := strconv.Atoi(value)
 		if err != nil {

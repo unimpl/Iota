@@ -2,7 +2,7 @@
 
 iota 是一个精简的 Go Agent SDK，以及使用该 SDK 构建的普通命令行编程助手。它保留 Agent 的必要闭环：请求模型、校验并执行工具、把工具结果交回模型，再得到最终回答。
 
-项目只支持 OpenAI 兼容 Chat Completions 协议。供模型使用的对话保存在内存中；CLI 同时将执行记录写入本地 JSONL，供查看器观察，不支持从记录恢复对话。项目不包含 TUI、自动压缩、插件、MCP 或多 Agent。
+项目只支持 OpenAI 兼容 Chat Completions 协议。SDK 默认在内存中保存对话，也提供可选的 JSONL 会话保存和恢复。CLI 使用同一套会话能力，记录可供查看器观察。项目不包含 TUI、自动压缩、插件、MCP 或多 Agent。
 
 ## 安装与 CLI
 
@@ -32,15 +32,18 @@ system = "回答前先读取相关文件。"
 tools = ["read", "write", "edit", "bash"]
 max_turns = 20
 timeout = "2m"
+save_session = true # false 表示只保留内存对话
 ```
 
-`api_key` 支持 `$NAME` 和 `${NAME}` 形式的环境变量引用；变量不存在时会报错。`OPENAI_API_KEY` 仍可直接覆盖它。其他可用环境变量为 `IOTA_MODEL`、`OPENAI_BASE_URL`、`IOTA_CWD`、`IOTA_SYSTEM`、`IOTA_TOOLS`、`IOTA_MAX_TURNS` 和 `IOTA_TIMEOUT`。`IOTA_TOOLS=none` 禁用工具。未知 TOML 字段、非法时长和非正数轮数会作为配置错误退出。
+`api_key` 支持 `$NAME` 和 `${NAME}` 形式的环境变量引用；变量不存在时会报错。`OPENAI_API_KEY` 仍可直接覆盖它。其他可用环境变量为 `IOTA_MODEL`、`OPENAI_BASE_URL`、`IOTA_CWD`、`IOTA_SYSTEM`、`IOTA_TOOLS`、`IOTA_MAX_TURNS`、`IOTA_TIMEOUT`、`IOTA_SAVE_SESSION` 和 `IOTA_RESUME`。`IOTA_TOOLS=none` 禁用工具。未知 TOML 字段、非法时长和非正数轮数会作为配置错误退出。
 
 CLI 支持 `~/.iota/SYSTEM.md` 和工作目录中的 `.iota/SYSTEM.md`：找到的文件替换内置系统提示。`APPEND_SYSTEM.md` 放在对应的 `.iota` 目录中，用于追加提示。两种文件分别查找，均以工作目录为先、用户目录为后；工作目录的空 `SYSTEM.md` 会使用内置提示，不再查找用户目录的同名文件。`--system`、配置文件中的 `system` 和 `IOTA_SYSTEM` 仍作为额外提示，位于 `APPEND_SYSTEM.md` 之前。工作目录根部的 `AGENTS.md` 最后加入。读取已存在的提示文件失败时，CLI 会报错退出。
 
-交互模式逐行接收任务，支持 `/reset` 和 `/exit`。模型文本写入 stdout，提示符、工具状态和错误写入 stderr。
+交互模式逐行接收任务，支持 `/reset` 和 `/exit`。模型文本写入 stdout，推理、提示符、工具状态和错误写入 stderr。
 
-每次启动 CLI 都会创建一个 session ID，并将记录写入 `~/.iota/sessions/YYYY-MM-DD-<uuid>.jsonl`。交互模式的多次任务共用该文件，每次任务有独立 run ID。文件包含用户消息、模型请求、文本增量、完整回复、工具调用与结果、用量、取消、错误和重置事件。工具内部的实时输出不单独记录；工具最终返回的内容会记录。文件只允许当前用户读写。CLI 会在 stderr 打印文件路径。
+CLI 默认创建一个 session ID，并将记录写入 `~/.iota/sessions/YYYY-MM-DD-<uuid>.jsonl`。交互模式的多次任务共用该文件，每次任务有独立 run ID。文件包含用户消息、模型请求、文本增量、完整回复、工具调用与结果、用量、取消、错误和重置事件。工具内部的实时输出不单独记录；工具最终返回的内容会记录。文件只允许当前用户读写。CLI 会在 stderr 打印文件路径。
+
+使用 `iota --no-session` 关闭保存，或 `iota --resume /path/to/session.jsonl` 恢复已有对话并继续向原文件追加。两者不能同时使用。配置文件也支持 `save_session = false` 和 `resume = "/path/to/session.jsonl"`。恢复只载入完整对话消息；模型、Provider、系统提示和工具使用当前配置。中断后未记录结果的工具调用会补为错误结果，不会重新执行工具。损坏的日志会报错，不覆盖文件。
 
 使用独立查看器浏览这些记录：
 
@@ -61,6 +64,8 @@ go run ./cmd/iota-view --folder /path/to/sessions
 --max-turns   每次运行最多模型轮数，默认 20
 --timeout     每次模型请求及 bash 命令的默认超时，默认 2m
 --tools       read,write,edit,bash 的逗号列表；none 表示禁用
+--no-session  关闭会话保存
+--resume      恢复并继续指定 JSONL 会话文件
 ```
 
 CLI 默认启用四个工具。工具使用当前进程权限；项目不提供沙箱或操作审批。
@@ -100,9 +105,52 @@ SDK 不读取配置文件、环境变量、`AGENTS.md` 或终端。只有 `cmd/i
 
 `Run` 同步等待一次完整运行，同一个 Agent 不允许并发运行。工具调用只在完整模型响应返回后执行；未知工具、参数错误和工具失败会作为 tool result 交回模型。模型请求错误、响应异常结束、输出截断、取消或达到轮数上限会停止运行。
 
-SDK 的事件回调同步发送，包含完整消息、每轮模型请求、文本增量、模型响应元信息、工具开始与结束，以及运行终态。SDK 不读写 session 文件；调用方可以自行处理事件。
+SDK 的事件回调同步发送，包含完整消息、每轮模型请求、文本增量、模型响应元信息、工具开始与结束，以及运行终态。
+
+直接调用 `agent.Run` 不写文件。需要保存时，在调用方选择的目录创建 `Session`，再通过 `session.Run` 运行：
+
+```go
+session, err := iota.NewSession("./sessions", iota.SessionInfo{Model: "my-model"})
+if err != nil {
+    log.Fatal(err)
+}
+defer session.Close()
+
+result, err := session.Run(ctx, agent, "解释 README", nil)
+```
+
+下次创建 Agent 后，打开会话、恢复历史，再继续运行：
+
+```go
+session, err := iota.OpenSession("./sessions/saved-session.jsonl")
+if err != nil {
+    log.Fatal(err)
+}
+defer session.Close()
+if err := session.Restore(agent); err != nil {
+    log.Fatal(err)
+}
+result, err := session.Run(ctx, agent, "继续之前的任务", nil)
+```
+
+保存期间使用 `session.Reset(agent)` 清空历史并保存重置事件。保存失败会作为运行错误返回，并取消本次运行。同一会话不支持同时运行、恢复、重置或关闭，也不支持多个进程同时写入同一文件。恢复不会自动还原工具函数、凭据或工作目录，这些由创建 Agent 的程序决定。
 
 参见 [`examples/basic`](examples/basic) 和 [`examples/custom-tool`](examples/custom-tool)。
+
+## 核心代码阅读顺序
+
+先读 `agent.go` 的 `Run`：加入用户消息 → 请求模型 → 如果没有工具调用则返回回答 → 否则执行工具、加入工具结果，再请求模型。该文件保留运行状态、核心循环、消息追加和取消时补齐工具结果的代码。
+
+其余代码按职责放在同一个 `iota` 包的其他文件中：
+
+| 文件 | 内容 |
+| --- | --- |
+| `types.go` | 消息、工具、模型请求与回复、事件的数据结构，以及 Provider 接口 |
+| `config.go` | Agent 配置、默认轮数和 `New` 初始化 |
+| `tool.go` | 工具调用校验、参数校验与执行，以及工具 schema 的引用检查 |
+| `messages.go` | 读取和清空历史，以及消息与工具调用的独立副本 |
+| `session.go` | 可选会话保存、运行、重置和关闭 |
+| `session_restore.go` | 读取会话、校验消息、处理中断后的工具结果缺失 |
 
 ## 开发
 

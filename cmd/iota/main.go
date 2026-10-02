@@ -24,15 +24,17 @@ const defaultSystemPrompt = `You are a concise coding agent. Inspect relevant fi
 
 // options 是合并文件、环境变量和命令行参数后的运行配置。
 type options struct {
-	prompt   string
-	model    string
-	baseURL  string
-	apiKey   string
-	cwd      string
-	system   string
-	tools    string
-	maxTurns int
-	timeout  time.Duration
+	prompt    string
+	model     string
+	baseURL   string
+	apiKey    string
+	cwd       string
+	system    string
+	tools     string
+	maxTurns  int
+	timeout   time.Duration
+	noSession bool
+	resume    string
 }
 
 // main 把 CLI 退出码交给操作系统；可测试的控制流程保留在 run 中。
@@ -98,27 +100,38 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "iota: -p cannot be combined with piped standard input")
 		return 2
 	}
-	log, err := newSessionLog(opts.model, absCWD)
-	if err != nil {
-		fmt.Fprintln(stderr, "iota:", err)
-		return 1
+	var session *iota.Session
+	if !opts.noSession {
+		if opts.resume != "" {
+			session, err = iota.OpenSession(opts.resume)
+		} else {
+			var home string
+			home, err = os.UserHomeDir()
+			if err == nil {
+				session, err = iota.NewSession(filepath.Join(home, ".iota", "sessions"), iota.SessionInfo{Model: opts.model, CWD: absCWD})
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, "iota:", err)
+			return 1
+		}
+		defer func() {
+			if err := session.Close(); err != nil {
+				fmt.Fprintln(stderr, "iota: close session:", err)
+			}
+		}()
+		if err := session.Restore(agent); err != nil {
+			fmt.Fprintln(stderr, "iota: restore session:", err)
+			return 1
+		}
+		fmt.Fprintln(stderr, "session:", session.Path())
 	}
-	// 即使运行失败也尝试写入结束事件并关闭日志，避免查看器看到悬空会话。
-	defer func() {
-		if err := log.write("", "session_end", nil); err != nil {
-			fmt.Fprintln(stderr, "iota: session recording incomplete:", err)
-		}
-		if err := log.close(); err != nil {
-			fmt.Fprintln(stderr, "iota: close session file:", err)
-		}
-	}()
-	fmt.Fprintln(stderr, "session:", log.path)
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 
 	if opts.prompt != "" {
-		return execute(agent, opts.prompt, signals, stdout, stderr, true, log)
+		return execute(agent, opts.prompt, signals, stdout, stderr, true, session)
 	}
 	if !terminal {
 		data, err := io.ReadAll(stdin)
@@ -130,9 +143,9 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "iota: standard input is empty")
 			return 2
 		}
-		return execute(agent, string(data), signals, stdout, stderr, true, log)
+		return execute(agent, string(data), signals, stdout, stderr, true, session)
 	}
-	return interactive(agent, signals, stdin, stdout, stderr, log)
+	return interactive(agent, signals, stdin, stdout, stderr, session)
 }
 
 // parseOptions 加载本地配置，再交给可注入依赖的解析函数处理覆盖关系。
@@ -164,6 +177,8 @@ func parseOptionsWithConfig(args []string, stderr io.Writer, config fileConfig, 
 	flags.StringVar(&opts.tools, "tools", opts.tools, "comma-separated tools, or none")
 	flags.IntVar(&opts.maxTurns, "max-turns", opts.maxTurns, "maximum model turns per run")
 	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "timeout for each model request and bash command")
+	flags.BoolVar(&opts.noSession, "no-session", opts.noSession, "disable saving conversations")
+	flags.StringVar(&opts.resume, "resume", opts.resume, "restore and continue a session JSONL file")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -175,6 +190,9 @@ func parseOptionsWithConfig(args []string, stderr io.Writer, config fileConfig, 
 	}
 	if opts.timeout <= 0 {
 		return options{}, errors.New("--timeout must be positive")
+	}
+	if opts.noSession && opts.resume != "" {
+		return options{}, errors.New("--no-session cannot be combined with --resume")
 	}
 	return opts, nil
 }
@@ -268,7 +286,7 @@ func createTools(cwd, list string, timeout time.Duration) ([]iota.Tool, error) {
 
 // interactive 用行编辑器读取输入，按字符和显示宽度处理中文删除与光标移动。
 // 每次只读取一行，运行模型时恢复普通终端模式，以便继续响应中断信号。
-func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, stdout, stderr io.Writer, log *sessionLog) int {
+func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, stdout, stderr io.Writer, session *iota.Session) int {
 	input := readline.NewCancelableStdin(stdin)
 	config := inputConfig(stdin, stderr)
 	config.Stdin = input
@@ -317,34 +335,22 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 			case "/exit":
 				return 0
 			case "/reset":
-				if err := agent.Reset(); err != nil {
+				if err := session.Reset(agent); err != nil {
 					fmt.Fprintln(stderr, "iota:", err)
 				} else {
-					if err := log.write("", "session_reset", nil); err != nil {
-						fmt.Fprintln(stderr, "iota: session recording incomplete:", err)
-					}
 					fmt.Fprintln(stderr, "conversation reset")
 				}
 				continue
 			}
-			_ = execute(agent, line, signals, stdout, stderr, false, log)
+			_ = execute(agent, line, signals, stdout, stderr, false, session)
 		}
 	}
 }
 
 // execute 运行一次提示并转发文本和工具事件；中断时等待 Agent 完成清理。
-func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout, stderr io.Writer, single bool, log *sessionLog) int {
+func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout, stderr io.Writer, single bool, session *iota.Session) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	runID := ""
-	if log != nil {
-		var err error
-		runID, err = newUUID()
-		if err != nil {
-			fmt.Fprintln(stderr, "iota:", err)
-			return 1
-		}
-	}
 	// outcome 把运行结果和错误一起从工作协程传回，避免阻塞信号处理。
 	type outcome struct {
 		result iota.RunResult
@@ -352,13 +358,8 @@ func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout,
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		recordingErrorReported := false
 		reasoningOpen := false
-		result, err := agent.Run(ctx, prompt, func(event iota.Event) {
-			if writeErr := log.event(runID, event); writeErr != nil && !recordingErrorReported {
-				fmt.Fprintln(stderr, "iota: session recording incomplete:", writeErr)
-				recordingErrorReported = true
-			}
+		result, err := session.Run(ctx, agent, prompt, func(event iota.Event) {
 			if reasoningOpen && (event.Type == iota.EventTextDelta || event.Type == iota.EventToolCallDelta || event.Type == iota.EventModelResponse || event.Type == iota.EventRunEnd) {
 				fmt.Fprintln(stderr, "\n[/thinking]")
 				reasoningOpen = false
