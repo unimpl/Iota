@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -22,38 +21,8 @@ func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout,
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		reasoningOpen := false
-		result, err := session.Run(ctx, agent, prompt, func(event iota.Event) {
-			if reasoningOpen && (event.Type == iota.EventTextDelta || event.Type == iota.EventToolCallDelta || event.Type == iota.EventModelResponse || event.Type == iota.EventRunEnd) {
-				fmt.Fprintln(stderr, "\n[/thinking]")
-				reasoningOpen = false
-			}
-			switch event.Type {
-			case iota.EventReasoningDelta:
-				if !reasoningOpen {
-					fmt.Fprintln(stderr, "[thinking]")
-					reasoningOpen = true
-				}
-				fmt.Fprint(stderr, event.Reasoning)
-			case iota.EventTextDelta:
-				fmt.Fprint(stdout, event.Text)
-			case iota.EventToolStart:
-				if event.ToolCall.Name == "bash" {
-					var args struct {
-						Command string `json:"command"`
-					}
-					if err := json.Unmarshal(event.ToolCall.Arguments, &args); err == nil && args.Command != "" {
-						fmt.Fprintf(stderr, "[bash] %s\n", args.Command)
-						break
-					}
-				}
-				fmt.Fprintf(stderr, "[%s] %s\n", event.ToolCall.Name, event.ToolCall.Arguments)
-			case iota.EventToolEnd:
-				if event.IsError {
-					fmt.Fprintf(stderr, "[%s error] %s\n", event.ToolCall.Name, event.ToolResult)
-				}
-			}
-		})
+		output := eventOutput{stdout: stdout, stderr: stderr, stdoutStyle: styleFor(stdout), stderrStyle: styleFor(stderr)}
+		result, err := session.Run(ctx, agent, prompt, output.emit)
 		done <- outcome{result: result, err: err}
 	}()
 
@@ -62,7 +31,7 @@ func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout,
 		cancel()
 		completed := <-done
 		_ = completed
-		fmt.Fprintln(stderr, "iota: canceled")
+		printLine(stderr, colorTool, "iota: canceled")
 		if single {
 			return 130
 		}
@@ -70,7 +39,7 @@ func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout,
 	case completed := <-done:
 		fmt.Fprintln(stdout)
 		if completed.err != nil {
-			fmt.Fprintln(stderr, "iota:", formatRunError(completed.err))
+			printLine(stderr, colorError, "iota: "+formatRunError(completed.err))
 			return 1
 		}
 		return 0

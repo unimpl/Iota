@@ -23,31 +23,31 @@ func main() {
 func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	opts, err := parseOptions(args, stderr)
 	if err != nil {
-		fmt.Fprintln(stderr, "iota:", err)
+		printLine(stderr, colorError, "iota: "+err.Error())
 		return 2
 	}
 	if opts.model == "" {
-		fmt.Fprintln(stderr, "iota: model is required; use --model or IOTA_MODEL")
+		printLine(stderr, colorError, "iota: model is required; use --model or IOTA_MODEL")
 		return 2
 	}
 	absCWD, err := filepath.Abs(opts.cwd)
 	if err != nil {
-		fmt.Fprintln(stderr, "iota:", err)
+		printLine(stderr, colorError, "iota: "+err.Error())
 		return 2
 	}
 	info, err := os.Stat(absCWD)
 	if err != nil || !info.IsDir() {
-		fmt.Fprintf(stderr, "iota: invalid working directory %q\n", absCWD)
+		printLine(stderr, colorError, fmt.Sprintf("iota: invalid working directory %q", absCWD))
 		return 2
 	}
 	systemPrompt, err := loadSystemPrompt(absCWD, opts.system)
 	if err != nil {
-		fmt.Fprintln(stderr, "iota:", err)
+		printLine(stderr, colorError, "iota: "+err.Error())
 		return 2
 	}
 	selectedTools, err := createTools(absCWD, opts.tools, opts.timeout)
 	if err != nil {
-		fmt.Fprintln(stderr, "iota:", err)
+		printLine(stderr, colorError, "iota: "+err.Error())
 		return 2
 	}
 	provider, err := openaicompat.New(openaicompat.Config{
@@ -56,7 +56,7 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		Timeout: opts.timeout,
 	})
 	if err != nil {
-		fmt.Fprintln(stderr, "iota:", err)
+		printLine(stderr, colorError, "iota: "+err.Error())
 		return 2
 	}
 	agent, err := iota.New(iota.Config{
@@ -67,13 +67,13 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		MaxTurns:     opts.maxTurns,
 	})
 	if err != nil {
-		fmt.Fprintln(stderr, "iota:", err)
+		printLine(stderr, colorError, "iota: "+err.Error())
 		return 2
 	}
 
 	terminal := isTerminal(stdin)
 	if opts.prompt != "" && !terminal {
-		fmt.Fprintln(stderr, "iota: -p cannot be combined with piped standard input")
+		printLine(stderr, colorError, "iota: -p cannot be combined with piped standard input")
 		return 2
 	}
 	var session *iota.Session
@@ -92,21 +92,21 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(stderr, "iota:", err)
+			printLine(stderr, colorError, "iota: "+err.Error())
 			return 1
 		}
 		defer func() {
 			if err := session.Close(); err != nil {
-				fmt.Fprintln(stderr, "iota: close session:", err)
+				printLine(stderr, colorError, "iota: close session: "+err.Error())
 			}
 		}()
 		if err := session.Restore(agent); err != nil {
-			fmt.Fprintln(stderr, "iota: restore session:", err)
+			printLine(stderr, colorError, "iota: restore session: "+err.Error())
 			return 1
 		}
-		fmt.Fprintln(stderr, "session:", session.Path())
+		printLine(stderr, colorThinking, "session: "+session.Path())
 		defer func() {
-			fmt.Fprintf(stderr, "To resume this conversation, run: iota --resume '%s'\n", strings.ReplaceAll(session.Path(), "'", "'\"'\"'"))
+			printLine(stderr, colorThinking, fmt.Sprintf("To resume this conversation, run: iota --resume '%s'", strings.ReplaceAll(session.Path(), "'", "'\"'\"'")))
 		}()
 	}
 	signals := make(chan os.Signal, 1)
@@ -119,11 +119,11 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	if !terminal {
 		data, err := io.ReadAll(stdin)
 		if err != nil {
-			fmt.Fprintln(stderr, "iota:", err)
+			printLine(stderr, colorError, "iota: "+err.Error())
 			return 1
 		}
 		if strings.TrimSpace(string(data)) == "" {
-			fmt.Fprintln(stderr, "iota: standard input is empty")
+			printLine(stderr, colorError, "iota: standard input is empty")
 			return 2
 		}
 		return execute(agent, string(data), signals, stdout, stderr, true, session)

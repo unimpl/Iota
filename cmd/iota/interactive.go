@@ -20,7 +20,7 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 	editor, err := readline.NewEx(config)
 	if err != nil {
 		input.Close()
-		fmt.Fprintln(stderr, "iota: initialize input editor:", err)
+		printLine(stderr, colorError, "iota: initialize input editor: "+err.Error())
 		return 1
 	}
 	closed := false
@@ -31,7 +31,7 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 		closed = true
 		input.Close()
 		if err := editor.Close(); err != nil {
-			fmt.Fprintln(stderr, "iota: restore terminal settings:", err)
+			printLine(stderr, colorError, "iota: restore terminal settings: "+err.Error())
 		}
 	}
 	defer closeEditor()
@@ -52,7 +52,7 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 				return 0
 			}
 			if read.Error != nil {
-				fmt.Fprintln(stderr, "iota:", read.Error)
+				printLine(stderr, colorError, "iota: "+read.Error.Error())
 				return 1
 			}
 			line := strings.TrimSpace(read.Line)
@@ -63,9 +63,9 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 				return 0
 			case "/reset":
 				if err := session.Reset(agent); err != nil {
-					fmt.Fprintln(stderr, "iota:", err)
+					printLine(stderr, colorError, "iota: "+err.Error())
 				} else {
-					fmt.Fprintln(stderr, "conversation reset")
+					printLine(stderr, colorThinking, "conversation reset")
 				}
 				continue
 			}

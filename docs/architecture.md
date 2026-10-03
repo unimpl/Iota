@@ -242,7 +242,7 @@ flowchart TD
 | 文件 | 对照内容 |
 | --- | --- |
 | [`cmd/iota/main.go`](../cmd/iota/main.go)、[`options.go`](../cmd/iota/options.go)、[`config.go`](../cmd/iota/config.go) | CLI 配置覆盖、组件初始化、输入和会话选择 |
-| [`cmd/iota/execute.go`](../cmd/iota/execute.go)、[`interactive.go`](../cmd/iota/interactive.go) | 事件展示、信号取消、交互循环和重置 |
+| [`cmd/iota/execute.go`](../cmd/iota/execute.go)、[`output.go`](../cmd/iota/output.go)、[`interactive.go`](../cmd/iota/interactive.go) | 信号取消、终端颜色与事件分段、交互循环和重置 |
 | [`agent.go`](../agent.go)、[`messages.go`](../messages.go) | 核心循环、取消结果补齐、历史副本与重置 |
 | [`config.go`](../config.go)、[`tool.go`](../tool.go)、[`types.go`](../types.go) | Agent 构造、工具校验、接口与数据类型 |
 | [`provider/openaicompat/provider.go`](../provider/openaicompat/provider.go) | HTTP 编码、流解析、工具片段拼接与请求超时 |

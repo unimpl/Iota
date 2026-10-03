@@ -12,10 +12,12 @@ import (
 func inputConfig(stdin *os.File, output io.Writer) *readline.Config {
 	fd := int(stdin.Fd())
 	terminal := readline.IsTerminal(fd)
+	style := styleFor(output)
 	var mu sync.Mutex
 	var state *readline.State
 	return &readline.Config{
-		Prompt:         "> ",
+		Prompt:         style.text(colorUserLabel, "[you] > "),
+		Painter:        style,
 		Stdout:         output,
 		Stderr:         output,
 		EOFPrompt:      "\n",
