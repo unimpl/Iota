@@ -6,6 +6,14 @@ const header = document.getElementById('session-header');
 const timeline = document.getElementById('timeline');
 const connection = document.getElementById('connection');
 const toggle = document.getElementById('toggle-sidebar');
+const deleteDialog = document.getElementById('delete-dialog');
+const deleteConfirm = document.getElementById('delete-confirm');
+const deleteCancel = document.getElementById('delete-cancel');
+const deleteError = document.getElementById('delete-error');
+let pendingDelete = null;
+let deleting = false;
+// 删除后使先前发起的目录请求失效，避免旧响应重新显示已删除会话。
+let sessionsRequest = 0;
 
 // 会话列表由目录轮询更新，不能把它当作事件流的完整内容。
 let sessions = [];
@@ -174,25 +182,70 @@ function rawRequestDisclosure(record) {
 
 // refreshSessions 定期刷新目录摘要；当前会话被删除时关闭旧连接并选择新会话。
 async function refreshSessions() {
+  const request = ++sessionsRequest;
   try {
     const response = await fetch('/api/sessions', { cache: 'no-store' });
     if (!response.ok) throw new Error('HTTP ' + response.status);
-    sessions = await response.json();
-    sessionCount.textContent = String(sessions.length);
-    renderSessionList();
-    if (!selected && sessions.length) selectSession(sessions[0].name);
-    if (selected && !sessions.some(item => item.name === selected)) {
-      source?.close();
-      source = null;
-      selected = null;
-      records = [];
-      if (sessions.length) selectSession(sessions[0].name);
-      else scheduleRender();
-    }
+    const next = await response.json();
+    if (request === sessionsRequest) updateSessions(next);
   } catch (error) {
-    setConnection('无法读取目录：' + error.message, 'error');
+    if (request === sessionsRequest) setConnection('无法读取目录：' + error.message, 'error');
   }
 }
+
+// updateSessions 同步列表与选择，删除当前会话时关闭事件流并清空详情。
+function updateSessions(next) {
+  sessions = next;
+  sessionCount.textContent = String(sessions.length);
+  if (selected && !sessions.some(item => item.name === selected)) {
+    source?.close();
+    source = null;
+    selected = null;
+    records = [];
+    expanded.clear();
+    expandedTurns.clear();
+    scheduleRender();
+    setConnection('尚无 session');
+  }
+  if (!selected && sessions.length) selectSession(sessions[0].name);
+  else renderSessionList();
+}
+
+deleteCancel.addEventListener('click', () => deleteDialog.close());
+deleteDialog.addEventListener('cancel', event => {
+  if (deleting) event.preventDefault();
+});
+deleteDialog.addEventListener('close', () => {
+  const name = pendingDelete?.name;
+  pendingDelete = null;
+  // 目录轮询会重建按钮，关闭确认框后显式恢复键盘焦点。
+  const button = [...sessionNav.querySelectorAll('.session-delete')].find(item => item.dataset.sessionName === name);
+  (button || sessionNav.querySelector('.session-item.active, .session-item') || toggle).focus();
+});
+deleteConfirm.addEventListener('click', async () => {
+  if (!pendingDelete || deleting) return;
+  const name = pendingDelete.name;
+  deleting = true;
+  deleteConfirm.disabled = deleteCancel.disabled = true;
+  deleteConfirm.textContent = '正在删除…';
+  deleteError.hidden = true;
+  try {
+    const response = await fetch('/api/sessions?name=' + encodeURIComponent(name), {
+      method: 'DELETE', headers: { 'X-Iota-Delete': '1' }
+    });
+    if (!response.ok && response.status !== 404) throw new Error((await response.text()).trim() || 'HTTP ' + response.status);
+    sessionsRequest++;
+    updateSessions(sessions.filter(session => session.name !== name));
+    deleteDialog.close();
+  } catch (error) {
+    deleteError.textContent = '删除失败：' + error.message + '。请重试。';
+    deleteError.hidden = false;
+  } finally {
+    deleting = false;
+    deleteConfirm.disabled = deleteCancel.disabled = false;
+    deleteConfirm.textContent = '删除文件';
+  }
+});
 
 // renderSessionList 重新生成导航，并标明当前选中的会话。
 function renderSessionList() {
@@ -202,6 +255,7 @@ function renderSessionList() {
     return;
   }
   for (const session of sessions) {
+    const row = node('div', 'session-row' + (session.name === selected ? ' active' : ''));
     const button = node('button', 'session-item' + (session.name === selected ? ' active' : ''));
     button.type = 'button';
     button.setAttribute('aria-current', session.name === selected ? 'page' : 'false');
@@ -209,7 +263,32 @@ function renderSessionList() {
     button.append(node('span', 'session-date', formatTime(session.created_at)));
     button.append(node('span', 'session-meta', (session.model || 'model') + ' · ' + session.name.slice(11, 19)));
     button.addEventListener('click', () => selectSession(session.name));
-    sessionNav.append(button);
+    const remove = node('button', 'session-delete');
+    remove.type = 'button';
+    remove.dataset.sessionName = session.name;
+    remove.title = '删除 session';
+    remove.setAttribute('aria-label', '删除 session：' + (session.title || session.name));
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 24 24');
+    icon.setAttribute('fill', 'none');
+    icon.setAttribute('stroke', 'currentColor');
+    icon.setAttribute('stroke-width', '1.8');
+    icon.setAttribute('stroke-linecap', 'round');
+    icon.setAttribute('stroke-linejoin', 'round');
+    icon.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6');
+    icon.append(path);
+    remove.append(icon);
+    remove.addEventListener('click', () => {
+      pendingDelete = session;
+      document.getElementById('delete-session-title').textContent = session.title || '尚无提问';
+      document.getElementById('delete-filename').textContent = session.name;
+      deleteError.hidden = true;
+      deleteDialog.showModal();
+    });
+    row.append(button, remove);
+    sessionNav.append(row);
   }
 }
 

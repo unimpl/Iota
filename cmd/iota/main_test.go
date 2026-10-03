@@ -166,13 +166,18 @@ func TestRunWithPipedInput(t *testing.T) {
 
 // TestRunOptionalSession 验证 CLI 可关闭保存，或从 SDK 会话恢复后继续追加。
 func TestRunOptionalSession(t *testing.T) {
-	for _, resume := range []bool{false, true} {
-		t.Run(fmt.Sprintf("resume=%t", resume), func(t *testing.T) {
+	for _, mode := range []string{"disabled", "path", "uuid", "latest", "empty"} {
+		t.Run(mode, func(t *testing.T) {
+			resume := mode != "disabled"
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			var sessionPath string
 			if resume {
-				session, err := iota.NewSession(t.TempDir(), iota.SessionInfo{Model: "test"})
+				dir := filepath.Join(home, ".iota", "sessions")
+				if mode == "path" {
+					dir = t.TempDir()
+				}
+				session, err := iota.NewSession(dir, iota.SessionInfo{Model: "test"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -215,7 +220,17 @@ func TestRunOptionalSession(t *testing.T) {
 			defer stdin.Close()
 			args := []string{"--model", "test", "--base-url", server.URL, "--cwd", t.TempDir(), "--tools", "none", "-p", "next question"}
 			if resume {
-				args = append(args, "--resume", sessionPath)
+				switch mode {
+				case "path":
+					args = append(args, "--resume", sessionPath)
+				case "uuid":
+					name := filepath.Base(sessionPath)
+					args = append(args, "--resume", strings.TrimSuffix(name[11:], ".jsonl"))
+				case "latest":
+					args = append(args, "--resume")
+				case "empty":
+					args = append(args, "--resume", "")
+				}
 			} else {
 				args = append(args, "--no-session")
 			}
@@ -225,11 +240,14 @@ func TestRunOptionalSession(t *testing.T) {
 			}
 			messages := <-requests
 			if resume {
+				if !strings.HasSuffix(stderr.String(), "To resume this conversation, run: iota --resume '"+sessionPath+"'\n") {
+					t.Fatalf("missing exit hint: %q", stderr.String())
+				}
 				if len(messages) != 4 || messages[1].Content != "first question" || messages[2].Content != "first answer" || messages[3].Content != "next question" {
 					t.Fatalf("messages=%+v", messages)
 				}
 			} else {
-				if strings.Contains(stderr.String(), "session:") {
+				if strings.Contains(stderr.String(), "session:") || strings.Contains(stderr.String(), "To resume") {
 					t.Fatalf("stderr=%q", stderr.String())
 				}
 				if _, err := os.Stat(filepath.Join(home, ".iota", "sessions")); !os.IsNotExist(err) {
@@ -256,7 +274,7 @@ func TestRunRejectsPromptWithPipedInput(t *testing.T) {
 
 // TestRunWithPromptFlag 验证单次运行会记录原始请求、流事件及会话结束事件。
 func TestRunWithPromptFlag(t *testing.T) {
-	home := t.TempDir()
+	home := filepath.Join(t.TempDir(), "home with ' quote")
 	t.Setenv("HOME", home)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
@@ -277,6 +295,10 @@ func TestRunWithPromptFlag(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(home, ".iota", "sessions"))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("session entries=%v err=%v", entries, err)
+	}
+	path := filepath.Join(home, ".iota", "sessions", entries[0].Name())
+	if !strings.HasSuffix(stderr.String(), "To resume this conversation, run: iota --resume '"+strings.ReplaceAll(path, "'", "'\"'\"'")+"'\n") {
+		t.Fatalf("missing quoted exit hint: %q", stderr.String())
 	}
 	data, err := os.ReadFile(filepath.Join(home, ".iota", "sessions", entries[0].Name()))
 	if err != nil {

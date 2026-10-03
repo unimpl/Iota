@@ -88,12 +88,48 @@ func listenAvailablePort(start int) (net.Listener, error) {
 	return nil, fmt.Errorf("no available port from %d to 65535", start)
 }
 
-// newHandler 提供嵌入页面、会话列表和持续跟随的事件流。
-// 事件接口只接受匹配文件名且确认为普通文件的日志。
+// newHandler 提供嵌入页面、会话列表、删除接口和持续跟随的事件流。
+// 文件接口只接受匹配文件名且确认为普通文件的日志。
 func newHandler(folder string) http.Handler {
 	mux := http.NewServeMux()
 	static, _ := fs.Sub(webFiles, "web")
 	mux.Handle("GET /", http.FileServer(http.FS(static)))
+	// 自定义请求头阻止其他网站通过跨域请求删除本地记录。
+	mux.HandleFunc("DELETE /api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Iota-Delete") != "1" ||
+			(r.Header.Get("Origin") != "" && r.Header.Get("Origin") != "http://"+r.Host) {
+			http.Error(w, "session deletion requires a same-origin request", http.StatusForbidden)
+			return
+		}
+		name := r.URL.Query().Get("name")
+		if !sessionFilename.MatchString(name) {
+			http.Error(w, "invalid session name", http.StatusBadRequest)
+			return
+		}
+		path := filepath.Join(folder, name)
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !info.Mode().IsRegular() {
+			http.Error(w, "session is not a regular file", http.StatusBadRequest)
+			return
+		}
+		if err := os.Remove(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				http.Error(w, "session not found", http.StatusNotFound)
+			} else {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	// 列表只读取每份日志的开头和首条用户消息，避免一次加载全部事件。
 	mux.HandleFunc("GET /api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		entries, err := os.ReadDir(folder)

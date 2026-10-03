@@ -51,3 +51,9 @@ func inputConfig(stdin *os.File, output io.Writer) *readline.Config {
 		},
 	}
 }
+
+// isTerminal 根据文件模式区分交互输入与管道输入。
+func isTerminal(file *os.File) bool {
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}

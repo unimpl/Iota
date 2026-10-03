@@ -8,12 +8,79 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// TestDeleteSession 验证只删除选中的普通日志，拒绝越界、跨域及符号链接。
+func TestDeleteSession(t *testing.T) {
+	name := "2026-10-03-00000000-0000-4000-8000-000000000001.jsonl"
+	for _, test := range []struct {
+		name   string
+		method string
+		query  string
+		kind   string
+		header string
+		origin string
+		status int
+	}{
+		{name: "delete", method: "DELETE", query: name, kind: "file", header: "1", status: http.StatusNoContent},
+		{name: "same origin", method: "DELETE", query: name, kind: "file", header: "1", origin: "http://localhost:9280", status: http.StatusNoContent},
+		{name: "missing", method: "DELETE", query: name, header: "1", status: http.StatusNotFound},
+		{name: "traversal", method: "DELETE", query: "../" + name, kind: "file", header: "1", status: http.StatusBadRequest},
+		{name: "directory", method: "DELETE", query: name, kind: "directory", header: "1", status: http.StatusBadRequest},
+		{name: "symlink", method: "DELETE", query: name, kind: "symlink", header: "1", status: http.StatusBadRequest},
+		{name: "missing header", method: "DELETE", query: name, kind: "file", status: http.StatusForbidden},
+		{name: "cross origin", method: "DELETE", query: name, kind: "file", header: "1", origin: "https://example.com", status: http.StatusForbidden},
+		{name: "wrong method", method: "POST", query: name, kind: "file", header: "1", status: http.StatusMethodNotAllowed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, name)
+			outside := filepath.Join(t.TempDir(), name)
+			if err := os.WriteFile(outside, []byte("untouched"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			switch test.kind {
+			case "file":
+				if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "directory":
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Symlink(outside, path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			request := httptest.NewRequest(test.method, "http://localhost:9280/api/sessions?name="+url.QueryEscape(test.query), nil)
+			request.Header.Set("X-Iota-Delete", test.header)
+			request.Header.Set("Origin", test.origin)
+			response := httptest.NewRecorder()
+			newHandler(dir).ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			_, err := os.Lstat(path)
+			if test.status == http.StatusNoContent {
+				if !os.IsNotExist(err) {
+					t.Fatalf("file remains: %v", err)
+				}
+			} else if test.kind != "" && err != nil {
+				t.Fatalf("rejected deletion changed file: %v", err)
+			}
+			if data, err := os.ReadFile(outside); err != nil || string(data) != "untouched" {
+				t.Fatalf("outside file changed: %q %v", data, err)
+			}
+		})
+	}
+}
 
 // TestSessionListSortsByCreationAndStreamWaitsForCompleteLine 验证排序稳定且尾部半行不会提前推送。
 func TestSessionListSortsByCreationAndStreamWaitsForCompleteLine(t *testing.T) {

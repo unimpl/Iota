@@ -13,9 +13,28 @@ button:focus-visible, summary:focus-visible { outline:2px solid var(--green); ou
 .brand-mark { display:grid; place-items:center; width:32px; height:32px; border-radius:9px; background:var(--green); color:#fff; font:24px Georgia,serif; }
 .side-heading { display:flex; justify-content:space-between; align-items:center; padding:20px 23px 11px; color:var(--muted); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.1em; white-space:nowrap; }
 #sessions { padding:0 10px 18px; overflow-y:auto; flex:1; scrollbar-color:#bac5b9 transparent; }
-.session-item { display:block; width:100%; padding:12px 13px; margin:3px 0; border:0; border-radius:9px; background:transparent; color:var(--ink); text-align:left; }
+.session-row { display:flex; align-items:center; margin:3px 0; border-radius:9px; }
+.session-row.active { background:#dbe8dc; }
+.session-item { display:block; flex:1; min-width:0; padding:12px 13px; border:0; border-radius:9px; background:transparent; color:var(--ink); text-align:left; }
 .session-item:hover { background:#e4eae2; }
-.session-item.active { background:#dbe8dc; color:#214d37; }
+.session-item.active { color:#214d37; }
+.session-delete { display:grid; place-items:center; flex:none; width:36px; height:36px; margin-right:6px; padding:8px; border:0; border-radius:6px; background:transparent; color:var(--muted); }
+.session-delete:hover { color:var(--red); background:var(--red-bg); }
+.session-delete svg { width:18px; height:18px; }
+#delete-dialog { width:min(440px,calc(100% - 32px)); padding:24px; border:1px solid var(--line); border-radius:12px; background:var(--paper); color:var(--ink); }
+#delete-dialog::backdrop { background:rgba(20,30,24,.4); }
+#delete-dialog h2 { margin:0 0 12px; font-size:20px; }
+#delete-dialog p { margin:10px 0; line-height:1.6; overflow-wrap:anywhere; }
+#delete-description { color:var(--muted); }
+#delete-session-title { font-weight:700; }
+#delete-error { color:var(--red); }
+.dialog-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:24px; }
+.dialog-actions button { min-height:40px; padding:8px 16px; border:1px solid var(--line); border-radius:6px; background:var(--white); color:var(--ink); }
+.dialog-actions button:hover { background:#e4eae2; }
+.dialog-actions #delete-confirm { border-color:var(--red); background:var(--red); color:var(--white); }
+.dialog-actions #delete-confirm:hover { background:#853832; }
+.dialog-actions button:disabled { opacity:.6; cursor:wait; }
+@media (pointer:coarse) { .session-delete { width:44px; height:44px; } }
 .session-item .session-title { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:700; }
 .session-item .session-date { display:block; margin-top:5px; color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
 .session-item .session-meta { display:block; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font:11px var(--mono); }

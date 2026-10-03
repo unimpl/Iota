@@ -1,9 +1,6 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -11,31 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/chzyer/readline"
 	iota "github.com/unimpl/Iota"
 	"github.com/unimpl/Iota/provider/openaicompat"
-	builtins "github.com/unimpl/Iota/tools"
 )
-
-// defaultSystemPrompt 给未配置项目规则时的 Agent 提供基本行为约束。
-const defaultSystemPrompt = `You are a concise coding agent. Inspect relevant files before changing them. Use tools only when needed, report tool errors accurately, and finish with a clear result.`
-
-// options 是合并文件、环境变量和命令行参数后的运行配置。
-type options struct {
-	prompt    string
-	model     string
-	baseURL   string
-	apiKey    string
-	cwd       string
-	system    string
-	tools     string
-	maxTurns  int
-	timeout   time.Duration
-	noSession bool
-	resume    string
-}
 
 // main 把 CLI 退出码交给操作系统；可测试的控制流程保留在 run 中。
 func main() {
@@ -102,8 +78,12 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	}
 	var session *iota.Session
 	if !opts.noSession {
-		if opts.resume != "" {
-			session, err = iota.OpenSession(opts.resume)
+		if opts.resumeRequested {
+			var path string
+			path, err = resolveResumePath(opts.resume)
+			if err == nil {
+				session, err = iota.OpenSession(path)
+			}
 		} else {
 			var home string
 			home, err = os.UserHomeDir()
@@ -125,6 +105,9 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprintln(stderr, "session:", session.Path())
+		defer func() {
+			fmt.Fprintf(stderr, "To resume this conversation, run: iota --resume '%s'\n", strings.ReplaceAll(session.Path(), "'", "'\"'\"'"))
+		}()
 	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
@@ -146,276 +129,4 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		return execute(agent, string(data), signals, stdout, stderr, true, session)
 	}
 	return interactive(agent, signals, stdin, stdout, stderr, session)
-}
-
-// parseOptions 加载本地配置，再交给可注入依赖的解析函数处理覆盖关系。
-func parseOptions(args []string, stderr io.Writer) (options, error) {
-	config, err := loadConfig()
-	if err != nil {
-		return options{}, err
-	}
-	return parseOptionsWithConfig(args, stderr, config, os.LookupEnv)
-}
-
-// parseOptionsWithConfig 按文件、环境变量、命令行的顺序应用配置。
-// 最后校验轮数和超时，避免无效值进入执行循环。
-func parseOptionsWithConfig(args []string, stderr io.Writer, config fileConfig, lookupEnv func(string) (string, bool)) (options, error) {
-	opts, err := optionsFromConfig(config)
-	if err != nil {
-		return options{}, err
-	}
-	if err := applyEnvironment(&opts, lookupEnv); err != nil {
-		return options{}, err
-	}
-	flags := flag.NewFlagSet("iota", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.StringVar(&opts.prompt, "p", "", "run one prompt and exit")
-	flags.StringVar(&opts.model, "model", opts.model, "model name")
-	flags.StringVar(&opts.baseURL, "base-url", opts.baseURL, "OpenAI-compatible base URL")
-	flags.StringVar(&opts.cwd, "cwd", opts.cwd, "working directory")
-	flags.StringVar(&opts.system, "system", opts.system, "additional system prompt")
-	flags.StringVar(&opts.tools, "tools", opts.tools, "comma-separated tools, or none")
-	flags.IntVar(&opts.maxTurns, "max-turns", opts.maxTurns, "maximum model turns per run")
-	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "timeout for each model request and bash command")
-	flags.BoolVar(&opts.noSession, "no-session", opts.noSession, "disable saving conversations")
-	flags.StringVar(&opts.resume, "resume", opts.resume, "restore and continue a session JSONL file")
-	if err := flags.Parse(args); err != nil {
-		return options{}, err
-	}
-	if flags.NArg() != 0 {
-		return options{}, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
-	}
-	if opts.maxTurns <= 0 {
-		return options{}, errors.New("--max-turns must be positive")
-	}
-	if opts.timeout <= 0 {
-		return options{}, errors.New("--timeout must be positive")
-	}
-	if opts.noSession && opts.resume != "" {
-		return options{}, errors.New("--no-session cannot be combined with --resume")
-	}
-	return opts, nil
-}
-
-// loadSystemPrompt 读取用户目录与工作目录中的提示文件，再追加命令行提示和 AGENTS.md。
-func loadSystemPrompt(cwd, additional string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = ""
-	}
-	return loadSystemPromptFrom(cwd, home, additional)
-}
-
-// loadSystemPromptFrom 按基础提示、额外提示、追加文件、项目规则的顺序组装提示。
-// 两类 .iota 文件分别按项目优先查找；空 SYSTEM.md 使用默认提示，但不回退用户文件。
-func loadSystemPromptFrom(cwd, home, additional string) (string, error) {
-	base := defaultSystemPrompt
-	custom, found, err := readSystemPromptFile(cwd, home, "SYSTEM.md")
-	if err != nil {
-		return "", err
-	}
-	if found && strings.TrimSpace(custom) != "" {
-		base = custom
-	}
-	parts := []string{base}
-	if strings.TrimSpace(additional) != "" {
-		parts = append(parts, additional)
-	}
-	appendPrompt, found, err := readSystemPromptFile(cwd, home, "APPEND_SYSTEM.md")
-	if err != nil {
-		return "", err
-	}
-	if found && strings.TrimSpace(appendPrompt) != "" {
-		parts = append(parts, appendPrompt)
-	}
-	data, err := os.ReadFile(filepath.Join(cwd, "AGENTS.md"))
-	if err == nil {
-		parts = append(parts, "Project instructions from AGENTS.md:\n"+string(data))
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("read AGENTS.md: %w", err)
-	}
-	return strings.Join(parts, "\n\n"), nil
-}
-
-// readSystemPromptFile 优先读取工作目录的 .iota 文件，缺失时才查找用户目录。
-// 已找到但无法读取的文件会报错，避免悄悄使用较低优先级的提示。
-func readSystemPromptFile(cwd, home, name string) (string, bool, error) {
-	paths := []string{filepath.Join(cwd, ".iota", name)}
-	if home != "" {
-		paths = append(paths, filepath.Join(home, ".iota", name))
-	}
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			return string(data), true, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", false, fmt.Errorf("read %s: %w", path, err)
-		}
-	}
-	return "", false, nil
-}
-
-// createTools 按配置顺序选择内置工具，并去掉重复名称。
-// 空列表或 none 明确禁用工具，未知名称会报错。
-func createTools(cwd, list string, timeout time.Duration) ([]iota.Tool, error) {
-	available := map[string]iota.Tool{
-		"read":  builtins.NewRead(cwd),
-		"write": builtins.NewWrite(cwd),
-		"edit":  builtins.NewEdit(cwd),
-		"bash":  builtins.NewBash(cwd, timeout),
-	}
-	if strings.TrimSpace(list) == "" || strings.EqualFold(strings.TrimSpace(list), "none") {
-		return nil, nil
-	}
-	var result []iota.Tool
-	seen := make(map[string]bool)
-	for _, name := range strings.Split(list, ",") {
-		name = strings.TrimSpace(name)
-		tool, ok := available[name]
-		if !ok {
-			return nil, fmt.Errorf("unknown tool %q", name)
-		}
-		if !seen[name] {
-			result = append(result, tool)
-			seen[name] = true
-		}
-	}
-	return result, nil
-}
-
-// interactive 用行编辑器读取输入，按字符和显示宽度处理中文删除与光标移动。
-// 每次只读取一行，运行模型时恢复普通终端模式，以便继续响应中断信号。
-func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, stdout, stderr io.Writer, session *iota.Session) int {
-	input := readline.NewCancelableStdin(stdin)
-	config := inputConfig(stdin, stderr)
-	config.Stdin = input
-	editor, err := readline.NewEx(config)
-	if err != nil {
-		input.Close()
-		fmt.Fprintln(stderr, "iota: initialize input editor:", err)
-		return 1
-	}
-	closed := false
-	closeEditor := func() {
-		if closed {
-			return
-		}
-		closed = true
-		input.Close()
-		if err := editor.Close(); err != nil {
-			fmt.Fprintln(stderr, "iota: restore terminal settings:", err)
-		}
-	}
-	defer closeEditor()
-	for {
-		result := make(chan readline.Result, 1)
-		go func() {
-			line, err := editor.Readline()
-			result <- readline.Result{Line: line, Error: err}
-		}()
-		select {
-		case <-signals:
-			closeEditor()
-			<-result
-			fmt.Fprintln(stderr)
-			return 0
-		case read := <-result:
-			if errors.Is(read.Error, io.EOF) || errors.Is(read.Error, readline.ErrInterrupt) {
-				return 0
-			}
-			if read.Error != nil {
-				fmt.Fprintln(stderr, "iota:", read.Error)
-				return 1
-			}
-			line := strings.TrimSpace(read.Line)
-			switch line {
-			case "":
-				continue
-			case "/exit":
-				return 0
-			case "/reset":
-				if err := session.Reset(agent); err != nil {
-					fmt.Fprintln(stderr, "iota:", err)
-				} else {
-					fmt.Fprintln(stderr, "conversation reset")
-				}
-				continue
-			}
-			_ = execute(agent, line, signals, stdout, stderr, false, session)
-		}
-	}
-}
-
-// execute 运行一次提示并转发文本和工具事件；中断时等待 Agent 完成清理。
-func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout, stderr io.Writer, single bool, session *iota.Session) int {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	// outcome 把运行结果和错误一起从工作协程传回，避免阻塞信号处理。
-	type outcome struct {
-		result iota.RunResult
-		err    error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		reasoningOpen := false
-		result, err := session.Run(ctx, agent, prompt, func(event iota.Event) {
-			if reasoningOpen && (event.Type == iota.EventTextDelta || event.Type == iota.EventToolCallDelta || event.Type == iota.EventModelResponse || event.Type == iota.EventRunEnd) {
-				fmt.Fprintln(stderr, "\n[/thinking]")
-				reasoningOpen = false
-			}
-			switch event.Type {
-			case iota.EventReasoningDelta:
-				if !reasoningOpen {
-					fmt.Fprintln(stderr, "[thinking]")
-					reasoningOpen = true
-				}
-				fmt.Fprint(stderr, event.Reasoning)
-			case iota.EventTextDelta:
-				fmt.Fprint(stdout, event.Text)
-			case iota.EventToolStart:
-				fmt.Fprintf(stderr, "[%s]\n", event.ToolCall.Name)
-			case iota.EventToolEnd:
-				if event.IsError {
-					fmt.Fprintf(stderr, "[%s error] %s\n", event.ToolCall.Name, event.ToolResult)
-				}
-			}
-		})
-		done <- outcome{result: result, err: err}
-	}()
-
-	select {
-	case <-signals:
-		cancel()
-		completed := <-done
-		_ = completed
-		fmt.Fprintln(stderr, "iota: canceled")
-		if single {
-			return 130
-		}
-		return 0
-	case completed := <-done:
-		fmt.Fprintln(stdout)
-		if completed.err != nil {
-			fmt.Fprintln(stderr, "iota:", formatRunError(completed.err))
-			return 1
-		}
-		return 0
-	}
-}
-
-// formatRunError 在上下文容量错误后提示可用的重置操作。
-func formatRunError(err error) string {
-	message := err.Error()
-	lower := strings.ToLower(message)
-	if strings.Contains(lower, "context") && (strings.Contains(lower, "length") || strings.Contains(lower, "token")) {
-		return message + "; use /reset to clear the in-memory conversation"
-	}
-	return message
-}
-
-// isTerminal 根据文件模式区分交互输入与管道输入。
-func isTerminal(file *os.File) bool {
-	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }

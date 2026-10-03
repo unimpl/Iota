@@ -13,7 +13,7 @@
       <div class="brand"><span class="brand-mark" aria-hidden="true">ι</span><span>Iota <small>Sessions</small></span></div>
       <div class="side-heading"><span>会话记录</span><span id="session-count">0</span></div>
       <nav id="sessions" aria-label="选择 session"></nav>
-      <div class="side-foot">本地记录 · 仅供查看</div>
+      <div class="side-foot">本地会话记录</div>
     </aside>
     <main class="main">
       <header class="topbar">
@@ -32,6 +32,17 @@
       </div>
     </main>
   </div>
+  <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description delete-filename">
+    <h2 id="delete-title">删除 session？</h2>
+    <p id="delete-description">确认后将永久删除对应文件，无法恢复。</p>
+    <p id="delete-session-title"></p>
+    <p id="delete-filename" class="filename"></p>
+    <p id="delete-error" role="alert" hidden></p>
+    <div class="dialog-actions">
+      <button id="delete-cancel" type="button" autofocus>取消</button>
+      <button id="delete-confirm" type="button">删除文件</button>
+    </div>
+  </dialog>
   <script src="/app.js" defer></script>
 </body>
 </html>
