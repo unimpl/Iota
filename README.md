@@ -45,7 +45,7 @@ CLI 默认创建一个 session ID，并将记录写入 `~/.iota/sessions/YYYY-MM
 
 使用 `iota --no-session` 关闭保存，或 `iota --resume /path/to/session.jsonl` 恢复已有对话并继续向原文件追加。两者不能同时使用。配置文件也支持 `save_session = false` 和 `resume = "/path/to/session.jsonl"`。恢复只载入完整对话消息；模型、Provider、系统提示和工具使用当前配置。中断后未记录结果的工具调用会补为错误结果，不会重新执行工具。损坏的日志会报错，不覆盖文件。
 
-`iota --resume <uuid>` 在 `~/.iota/sessions` 中查找文件名包含该 UUID 的 JSONL 文件，多个匹配时选最近修改的文件。`iota --resume` 或 `iota --resume=""` 恢复该目录中最近修改的会话。没有匹配会话时会报错，不创建新会话。配置文件和 `IOTA_RESUME` 的非空值也支持 UUID。
+`iota --resume <uuid>` 在 `~/.iota/sessions` 中查找文件名包含该 UUID 的 JSONL 文件，多个匹配时选最近修改的文件。`--resume` 必须传值；`iota --resume=""` 恢复该目录中最近修改的会话。没有匹配会话时会报错，不创建新会话。配置文件和 `IOTA_RESUME` 的非空值也支持 UUID。
 
 使用独立查看器浏览这些记录：
 
@@ -67,7 +67,7 @@ go run ./cmd/iota-view --folder /path/to/sessions
 --timeout     每次模型请求及 bash 命令的默认超时，默认 2m
 --tools       read,write,edit,bash 的逗号列表；none 表示禁用
 --no-session  关闭会话保存
---resume      按路径或 UUID 恢复会话；不带值时恢复最近修改的会话
+--resume      按路径或 UUID 恢复会话；传空字符串时恢复最近修改的会话
 ```
 
 CLI 默认启用四个工具。工具使用当前进程权限；项目不提供沙箱或操作审批。

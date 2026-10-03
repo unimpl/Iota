@@ -56,32 +56,8 @@ func parseOptionsWithConfig(args []string, stderr io.Writer, config fileConfig, 
 	flags.IntVar(&opts.maxTurns, "max-turns", opts.maxTurns, "maximum model turns per run")
 	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "timeout for each model request and bash command")
 	flags.BoolVar(&opts.noSession, "no-session", opts.noSession, "disable saving conversations")
-	flags.StringVar(&opts.resume, "resume", opts.resume, "restore a session by path or UUID; omit the value for the latest session")
-	// Go 的 flag 包要求字符串参数有值；只为独立的 resume 参数补空值。
-	// 跳过其他选项的值，避免把 -p "--resume" 当成恢复参数。
-	normalized := append([]string(nil), args...)
-	for index := 0; index < len(normalized); index++ {
-		arg := normalized[index]
-		if arg == "--" || !strings.HasPrefix(arg, "-") || arg == "-" {
-			break
-		}
-		name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
-		option := flags.Lookup(name)
-		if option == nil {
-			break
-		}
-		if hasValue {
-			continue
-		}
-		if name == "resume" && (index+1 == len(normalized) || strings.HasPrefix(normalized[index+1], "-")) {
-			normalized[index] = arg + "="
-			continue
-		}
-		if boolean, ok := option.Value.(interface{ IsBoolFlag() bool }); !ok || !boolean.IsBoolFlag() {
-			index++
-		}
-	}
-	if err := flags.Parse(normalized); err != nil {
+	flags.StringVar(&opts.resume, "resume", opts.resume, "restore a session by path or UUID; use an empty value for the latest session")
+	if err := flags.Parse(args); err != nil {
 		return options{}, err
 	}
 	opts.resumeRequested = opts.resume != ""

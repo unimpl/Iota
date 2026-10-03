@@ -227,7 +227,7 @@ func TestRunOptionalSession(t *testing.T) {
 					name := filepath.Base(sessionPath)
 					args = append(args, "--resume", strings.TrimSuffix(name[11:], ".jsonl"))
 				case "latest":
-					args = append(args, "--resume")
+					args = append(args, "--resume=")
 				case "empty":
 					args = append(args, "--resume", "")
 				}

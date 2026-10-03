@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestParseOptionalResume(t *testing.T) {
+func TestParseResume(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		args      []string
@@ -18,16 +18,16 @@ func TestParseOptionalResume(t *testing.T) {
 		wantError bool
 	}{
 		{name: "default"},
-		{name: "bare", args: []string{"--resume"}, requested: true},
-		{name: "before flag", args: []string{"--resume", "--model", "test"}, requested: true},
+		{name: "bare", args: []string{"--resume"}, wantError: true},
+		{name: "before flag", args: []string{"--resume", "--model", "test"}, wantError: true},
 		{name: "empty equals", args: []string{"--resume="}, requested: true},
 		{name: "empty argument", args: []string{"--resume", ""}, requested: true},
 		{name: "uuid", args: []string{"--resume", "uuid"}, want: "uuid", requested: true},
 		{name: "path", args: []string{"--resume=/tmp/session.jsonl"}, want: "/tmp/session.jsonl", requested: true},
 		{name: "prompt value", args: []string{"-p", "--resume"}},
 		{name: "prompt equals", args: []string{"-p=--resume"}},
-		{name: "repeated", args: []string{"--resume", "uuid", "--resume"}, requested: true},
-		{name: "disabled", args: []string{"--no-session", "--resume"}, wantError: true},
+		{name: "repeated", args: []string{"--resume", "uuid", "--resume"}, wantError: true},
+		{name: "disabled", args: []string{"--no-session", "--resume="}, wantError: true},
 		{name: "terminator", args: []string{"--", "--resume"}, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -41,9 +41,9 @@ func TestParseOptionalResume(t *testing.T) {
 			}
 		})
 	}
-	// 显式不带值的命令行参数覆盖配置及环境变量中的会话选择。
+	// 显式空值的命令行参数覆盖配置及环境变量中的会话选择。
 	var stderr bytes.Buffer
-	opts, err := parseOptionsWithConfig([]string{"--resume"}, &stderr, fileConfig{Resume: "configured"}, func(name string) (string, bool) {
+	opts, err := parseOptionsWithConfig([]string{"--resume="}, &stderr, fileConfig{Resume: "configured"}, func(name string) (string, bool) {
 		return "environment", name == "IOTA_RESUME"
 	})
 	if err != nil || !opts.resumeRequested || opts.resume != "" {
