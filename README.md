@@ -137,9 +137,30 @@ result, err := session.Run(ctx, agent, "继续之前的任务", nil)
 
 保存期间使用 `session.Reset(agent)` 清空历史并保存重置事件。保存失败会作为运行错误返回，并取消本次运行。同一会话不支持同时运行、恢复、重置或关闭，也不支持多个进程同时写入同一文件。恢复不会自动还原工具函数、凭据或工作目录，这些由创建 Agent 的程序决定。
 
-参见 [`examples/basic`](examples/basic) 和 [`examples/custom-tool`](examples/custom-tool)。
+参见 [`examples/basic`](examples/basic)、[`examples/custom-tool`](examples/custom-tool) 和 [`examples/session`](examples/session)。Session 示例完整演示保存、关闭会话，再用新 Agent 恢复历史并继续对话：
+
+```sh
+go run ./examples/session -dir ./sessions
+```
 
 ## 核心代码阅读顺序
+
+```mermaid
+flowchart LR
+    CLI["cmd/iota：配置、输入、终端输出"] --> Session["Session：可选的保存与恢复"]
+    CLI --> Agent["Agent.Run：对话与工具循环"]
+    SDK["SDK 调用方"] --> Agent
+    SDK --> Session
+    Session -->|调用并保存事件| Agent
+    Agent -->|Request| Provider["Provider.Stream：模型通信"]
+    Provider -->|Delta 与完整 Response| Agent
+    Agent -->|校验后执行| Tools["Tool.Execute：本地工具"]
+    Tools -->|结果加入历史| Agent
+    Session --> JSONL["JSONL 会话文件"]
+    JSONL --> Viewer["cmd/iota-view：查看运行记录"]
+```
+
+详细的运行分支、类型关系、事件顺序和恢复流程见 [核心流程与类型关系](docs/architecture.md)。Go 中的核心类型是结构体和接口，文档使用 Mermaid 类图表示它们的字段、方法和依赖。
 
 先读 `agent.go` 的 `Run`：加入用户消息 → 请求模型 → 如果没有工具调用则返回回答 → 否则执行工具、加入工具结果，再请求模型。该文件保留运行状态、核心循环、消息追加和取消时补齐工具结果的代码。
 
