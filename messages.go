@@ -19,6 +19,8 @@ func (a *Agent) Reset() error {
 		return ErrBusy
 	}
 	a.messages = nil
+	a.collaboration.Plan = nil
+	a.collaboration.Progress = nil
 	return nil
 }
 

@@ -88,7 +88,7 @@ func validateToolCalls(calls []ToolCall) error {
 
 // executeTool 校验参数后执行指定工具，并将失败转成模型可见的错误文本。
 // 返回的布尔值表示工具错误，不表示整个 Agent 运行失败。
-func (a *Agent) executeTool(ctx context.Context, call ToolCall) (string, bool) {
+func (a *Agent) executeTool(ctx context.Context, call ToolCall, turn int, emit EmitFunc, record func(Event) error) (string, bool) {
 	var selected *compiledTool
 	for i := range a.tools {
 		if a.tools[i].tool.Name == call.Name {
@@ -107,6 +107,19 @@ func (a *Agent) executeTool(ctx context.Context, call ToolCall) (string, bool) {
 	}
 	if err := selected.schema.Validate(args); err != nil {
 		return "invalid tool arguments: " + err.Error(), true
+	}
+	if err := ctx.Err(); err != nil {
+		return err.Error(), true
+	}
+	if !a.toolAllowed(selected.tool) {
+		return fmt.Sprintf("tool %q is unavailable in %s mode", call.Name, a.Mode()), true
+	}
+	if selected.tool.planTool {
+		text, err := a.executePlanTool(ctx, call, turn, emit, record)
+		if err != nil {
+			return err.Error(), true
+		}
+		return text, false
 	}
 	text, err := selected.tool.Execute(ctx, call.Arguments)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -19,6 +20,11 @@ type Config struct {
 	SystemPrompt string
 	Tools        []Tool
 	MaxTurns     int
+	Mode         Mode
+	// PlansDir is supplied by the caller; the SDK does not choose a user directory.
+	PlansDir string
+	// PlanTemplatePath is an optional editable resource; empty uses the packaged default.
+	PlanTemplatePath string
 }
 
 // New 校验配置并预编译所有工具 schema，让无效工具在运行前失败。
@@ -35,6 +41,26 @@ func New(config Config) (*Agent, error) {
 	if config.MaxTurns == 0 {
 		config.MaxTurns = DefaultMaxTurns
 	}
+	if config.Mode == "" {
+		config.Mode = ModeDefault
+	}
+	if err := validateMode(config.Mode); err != nil {
+		return nil, err
+	}
+	if config.PlansDir != "" {
+		var err error
+		config.PlansDir, err = filepath.Abs(config.PlansDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve plans directory: %w", err)
+		}
+	}
+	if config.PlanTemplatePath != "" {
+		var err error
+		config.PlanTemplatePath, err = filepath.Abs(config.PlanTemplatePath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve plan template: %w", err)
+		}
+	}
 
 	seen := make(map[string]struct{}, len(config.Tools))
 	compiled := make([]compiledTool, 0, len(config.Tools))
@@ -45,8 +71,11 @@ func New(config Config) (*Agent, error) {
 		if _, ok := seen[tool.Name]; ok {
 			return nil, fmt.Errorf("duplicate tool name %q", tool.Name)
 		}
-		if tool.Execute == nil {
+		if tool.Execute == nil && !tool.planTool {
 			return nil, fmt.Errorf("tool %q has no execute function", tool.Name)
+		}
+		if tool.planTool && tool.Name == "save_plan" && config.PlansDir == "" {
+			return nil, errors.New("save_plan requires a plans directory")
 		}
 		if len(tool.Schema) == 0 {
 			return nil, fmt.Errorf("tool %q has no schema", tool.Name)
@@ -72,10 +101,13 @@ func New(config Config) (*Agent, error) {
 	}
 
 	return &Agent{
-		provider:     config.Provider,
-		model:        config.Model,
-		systemPrompt: config.SystemPrompt,
-		tools:        compiled,
-		maxTurns:     config.MaxTurns,
+		provider:         config.Provider,
+		model:            config.Model,
+		systemPrompt:     config.SystemPrompt,
+		tools:            compiled,
+		maxTurns:         config.MaxTurns,
+		plansDir:         config.PlansDir,
+		planTemplatePath: config.PlanTemplatePath,
+		collaboration:    CollaborationState{Mode: config.Mode},
 	}, nil
 }

@@ -16,7 +16,7 @@ func OpenSession(path string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{file: file, path: path}
+	s := &Session{file: file, path: path, collaboration: CollaborationState{Mode: ModeDefault}}
 	if err := s.read(); err != nil {
 		file.Close()
 		return nil, fmt.Errorf("load session: %w", err)
@@ -70,6 +70,17 @@ func (s *Session) read() error {
 		switch record.Type {
 		case "session_reset":
 			s.messages = nil
+			s.collaboration.Plan = nil
+			s.collaboration.Progress = nil
+		case string(EventModeChanged), string(EventPlanSaved), string(EventPlanUpdated), string(EventPlanApproved):
+			var event Event
+			if err := json.Unmarshal(record.Payload, &event); err != nil || string(event.Type) != record.Type {
+				return fmt.Errorf("invalid collaboration event at record %d", s.seq)
+			}
+			if err := validateCollaborationEvent(event); err != nil {
+				return fmt.Errorf("invalid collaboration event at record %d: %w", s.seq, err)
+			}
+			s.collaboration = cloneCollaboration(*event.Collaboration)
 		case string(EventMessageAdded):
 			var event Event
 			if err := json.Unmarshal(record.Payload, &event); err != nil || event.Message == nil || event.Type != EventMessageAdded {

@@ -45,10 +45,14 @@ type Tool struct {
 	Description string
 	Schema      json.RawMessage
 	Execute     func(context.Context, json.RawMessage) (string, error)
+	// ReadOnly allows this tool during planning; the caller owns this guarantee.
+	ReadOnly bool
+	planTool bool
 }
 
 // Request 汇集单轮模型请求；Messages 应保持对话和工具结果的原始顺序。
 type Request struct {
+	Mode         Mode             `json:"mode,omitempty"`
 	Model        string           `json:"model"`
 	SystemPrompt string           `json:"system_prompt"`
 	Messages     []Message        `json:"messages"`
@@ -118,25 +122,30 @@ const (
 	EventToolStart      EventType = "tool_start"
 	EventToolEnd        EventType = "tool_end"
 	EventRunEnd         EventType = "run_end"
+	EventModeChanged    EventType = "mode_changed"
+	EventPlanSaved      EventType = "plan_saved"
+	EventPlanUpdated    EventType = "plan_updated"
+	EventPlanApproved   EventType = "plan_approved"
 )
 
 // Event 是观察和会话日志的统一记录；字段按 Type 选择性填充。
 type Event struct {
-	Type          EventType      `json:"type"`
-	Turn          int            `json:"turn,omitempty"`
-	Text          string         `json:"text,omitempty"`
-	Reasoning     string         `json:"reasoning,omitempty"`
-	RawRequest    string         `json:"raw_request,omitempty"`
-	RawChunk      string         `json:"raw_chunk,omitempty"`
-	ToolCallDelta *ToolCallDelta `json:"tool_call_delta,omitempty"`
-	Message       *Message       `json:"message,omitempty"`
-	Request       *Request       `json:"request,omitempty"`
-	Usage         *Usage         `json:"usage,omitempty"`
-	ToolCall      *ToolCall      `json:"tool_call,omitempty"`
-	ToolResult    string         `json:"tool_result,omitempty"`
-	IsError       bool           `json:"is_error,omitempty"`
-	Reason        string         `json:"reason,omitempty"`
-	Error         string         `json:"error,omitempty"`
+	Type          EventType           `json:"type"`
+	Turn          int                 `json:"turn,omitempty"`
+	Text          string              `json:"text,omitempty"`
+	Reasoning     string              `json:"reasoning,omitempty"`
+	RawRequest    string              `json:"raw_request,omitempty"`
+	RawChunk      string              `json:"raw_chunk,omitempty"`
+	ToolCallDelta *ToolCallDelta      `json:"tool_call_delta,omitempty"`
+	Message       *Message            `json:"message,omitempty"`
+	Request       *Request            `json:"request,omitempty"`
+	Usage         *Usage              `json:"usage,omitempty"`
+	ToolCall      *ToolCall           `json:"tool_call,omitempty"`
+	ToolResult    string              `json:"tool_result,omitempty"`
+	IsError       bool                `json:"is_error,omitempty"`
+	Reason        string              `json:"reason,omitempty"`
+	Error         string              `json:"error,omitempty"`
+	Collaboration *CollaborationState `json:"collaboration,omitempty"`
 }
 
 // EmitFunc 接收同步发出的事件；回调应尽快返回，避免阻塞执行循环。

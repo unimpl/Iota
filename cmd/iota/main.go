@@ -59,12 +59,21 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		printLine(stderr, colorError, "iota: "+err.Error())
 		return 2
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		printLine(stderr, colorError, "iota: get user directory: "+err.Error())
+		return 2
+	}
+	plansDir := filepath.Join(home, ".iota", "plans")
 	agent, err := iota.New(iota.Config{
-		Provider:     provider,
-		Model:        opts.model,
-		SystemPrompt: systemPrompt,
-		Tools:        selectedTools,
-		MaxTurns:     opts.maxTurns,
+		Provider:         provider,
+		Model:            opts.model,
+		SystemPrompt:     systemPrompt,
+		Tools:            selectedTools,
+		MaxTurns:         opts.maxTurns,
+		Mode:             iota.Mode(opts.mode),
+		PlansDir:         plansDir,
+		PlanTemplatePath: filepath.Join(plansDir, "template.md"),
 	})
 	if err != nil {
 		printLine(stderr, colorError, "iota: "+err.Error())
@@ -85,11 +94,7 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 				session, err = iota.OpenSession(path)
 			}
 		} else {
-			var home string
-			home, err = os.UserHomeDir()
-			if err == nil {
-				session, err = iota.NewSession(filepath.Join(home, ".iota", "sessions"), iota.SessionInfo{Model: opts.model, CWD: absCWD})
-			}
+			session, err = iota.NewSession(filepath.Join(home, ".iota", "sessions"), iota.SessionInfo{Model: opts.model, CWD: absCWD})
 		}
 		if err != nil {
 			printLine(stderr, colorError, "iota: "+err.Error())
@@ -108,6 +113,12 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		defer func() {
 			printLine(stderr, colorThinking, fmt.Sprintf("To resume this conversation, run: iota --resume '%s'", strings.ReplaceAll(session.Path(), "'", "'\"'\"'")))
 		}()
+	}
+	if opts.modeRequested {
+		if err := session.SetMode(agent, iota.Mode(opts.mode), nil); err != nil {
+			printLine(stderr, colorError, "iota: set mode: "+err.Error())
+			return 1
+		}
 	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)

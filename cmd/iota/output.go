@@ -74,6 +74,16 @@ func (o *eventOutput) emit(event iota.Event) {
 		o.assistantOpen = false
 	}
 	switch event.Type {
+	case iota.EventModeChanged:
+		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "mode: "+string(event.Collaboration.Mode)))
+	case iota.EventPlanSaved:
+		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "plan saved: "+event.Collaboration.Plan.Path))
+	case iota.EventPlanApproved:
+		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "plan approved: "+event.Collaboration.Plan.Path))
+	case iota.EventPlanUpdated:
+		for _, step := range event.Collaboration.Progress.Plan {
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "["+step.Status+"] "+step.Step))
+		}
 	case iota.EventReasoningDelta:
 		if !o.reasoningOpen {
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "[thinking]"))

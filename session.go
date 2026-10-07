@@ -24,15 +24,16 @@ type SessionInfo struct {
 // Session 保存执行事件并恢复对话。目录由调用方指定，同一文件只能有一个写入者。
 // 使用 Agent.Run 只保留内存历史，使用 Session.Run 才会写入会话文件。
 type Session struct {
-	operation sync.Mutex
-	mu        sync.Mutex
-	file      *os.File
-	id        string
-	path      string
-	seq       uint64
-	err       error
-	closed    bool
-	messages  []Message
+	operation     sync.Mutex
+	mu            sync.Mutex
+	file          *os.File
+	id            string
+	path          string
+	seq           uint64
+	err           error
+	closed        bool
+	messages      []Message
+	collaboration CollaborationState
 }
 
 // sessionRecord 是单行 JSONL 的固定外壳；保留查看器使用的事件结构。
@@ -60,7 +61,7 @@ func NewSession(dir string, info SessionInfo) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create session file: %w", err)
 	}
-	s := &Session{file: file, id: id, path: path}
+	s := &Session{file: file, id: id, path: path, collaboration: CollaborationState{Mode: ModeDefault}}
 	if err := s.write("", "session_start", info); err != nil {
 		file.Close()
 		return nil, err
@@ -84,6 +85,8 @@ func (s *Session) Run(ctx context.Context, agent *Agent, prompt string, emit Emi
 	s.mu.Lock()
 	err := s.checkOpen()
 	messages := cloneMessages(s.messages)
+	state := cloneCollaboration(s.collaboration)
+	newSession := s.seq == 1
 	s.mu.Unlock()
 	if err != nil {
 		return RunResult{}, err
@@ -91,17 +94,36 @@ func (s *Session) Run(ctx context.Context, agent *Agent, prompt string, emit Emi
 	if !reflect.DeepEqual(agent.Messages(), messages) {
 		return RunResult{}, errors.New("agent history differs from session; call Session.Restore first")
 	}
+	agentState := agent.Collaboration()
+	if !reflect.DeepEqual(agentState, state) {
+		if !newSession {
+			return RunResult{}, errors.New("agent collaboration differs from session; call Session.Restore first")
+		}
+		if err := s.recordCollaboration("", Event{Type: EventModeChanged, Collaboration: &agentState}); err != nil {
+			return RunResult{}, err
+		}
+		emitEvent(emit, Event{Type: EventModeChanged, Collaboration: &agentState})
+	}
 	runID, err := newUUID()
 	if err != nil {
 		return RunResult{}, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	result, runErr := agent.Run(ctx, prompt, func(event Event) {
-		if err := s.write(runID, string(event.Type), event); err != nil {
-			cancel()
+	result, runErr := agent.run(ctx, prompt, func(event Event) {
+		// State events were already durably recorded by commitCollaboration.
+		if !isCollaborationEvent(event.Type) {
+			if err := s.write(runID, string(event.Type), event); err != nil {
+				cancel()
+			}
 		}
 		emitEvent(emit, event)
+	}, func(event Event) error {
+		if err := s.recordCollaboration(runID, event); err != nil {
+			cancel()
+			return err
+		}
+		return nil
 	})
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -127,7 +149,11 @@ func (s *Session) Restore(agent *Agent) error {
 	if agent.running {
 		return ErrBusy
 	}
+	if err := agent.restorePlanFile(s.collaboration); err != nil {
+		return err
+	}
 	agent.messages = cloneMessages(s.messages)
+	agent.collaboration = cloneCollaboration(s.collaboration)
 	return nil
 }
 
@@ -155,6 +181,8 @@ func (s *Session) Reset(agent *Agent) error {
 		return err
 	}
 	agent.messages = nil
+	agent.collaboration.Plan = nil
+	agent.collaboration.Progress = nil
 	return nil
 }
 
@@ -195,6 +223,15 @@ func (s *Session) write(runID, kind string, payload any) error {
 	if err := s.checkOpen(); err != nil {
 		return err
 	}
+	if isCollaborationEvent(EventType(kind)) {
+		event, ok := payload.(Event)
+		if !ok || string(event.Type) != kind {
+			return errors.New("invalid collaboration event")
+		}
+		if err := validateCollaborationEvent(event); err != nil {
+			return err
+		}
+	}
 	var raw json.RawMessage
 	var err error
 	if payload != nil {
@@ -223,10 +260,61 @@ func (s *Session) write(runID, kind string, payload any) error {
 	s.seq++
 	if kind == "session_reset" {
 		s.messages = nil
+		s.collaboration.Plan = nil
+		s.collaboration.Progress = nil
+	} else if event, ok := payload.(Event); ok && isCollaborationEvent(event.Type) {
+		s.collaboration = cloneCollaboration(*event.Collaboration)
 	} else if event, ok := payload.(Event); ok && event.Type == EventMessageAdded && event.Message != nil {
 		s.messages = append(s.messages, *cloneMessagePointer(*event.Message))
 	}
 	return nil
+}
+
+// recordCollaboration synchronizes a state checkpoint before a later operation can use it.
+func (s *Session) recordCollaboration(runID string, event Event) error {
+	if err := s.write(runID, string(event.Type), event); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = s.file.Sync()
+	return s.err
+}
+
+// SetMode records a user-driven collaboration change without calling the model.
+func (s *Session) SetMode(agent *Agent, mode Mode, emit EmitFunc) error {
+	if s == nil {
+		return agent.SetMode(mode, emit)
+	}
+	if !s.operation.TryLock() {
+		return ErrBusy
+	}
+	defer s.operation.Unlock()
+	s.mu.Lock()
+	err := s.checkOpen()
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return agent.setMode(mode, emit, func(event Event) error { return s.recordCollaboration("", event) })
+}
+
+// ApprovePlan records the exact file content the user approved and leaves plan mode.
+func (s *Session) ApprovePlan(agent *Agent, emit EmitFunc) (SavedPlan, error) {
+	if s == nil {
+		return agent.ApprovePlan(emit)
+	}
+	if !s.operation.TryLock() {
+		return SavedPlan{}, ErrBusy
+	}
+	defer s.operation.Unlock()
+	s.mu.Lock()
+	err := s.checkOpen()
+	s.mu.Unlock()
+	if err != nil {
+		return SavedPlan{}, err
+	}
+	return agent.approvePlan(emit, func(event Event) error { return s.recordCollaboration("", event) })
 }
 
 // newUUID 为会话与每次运行生成随机 v4 UUID。

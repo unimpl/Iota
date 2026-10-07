@@ -36,6 +36,11 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 	}
 	defer closeEditor()
 	for {
+		prompt := "[you] > "
+		if agent.Mode() == iota.ModePlan {
+			prompt = "[you:plan] > "
+		}
+		editor.SetPrompt(styleFor(stderr).text(colorUserLabel, prompt))
 		result := make(chan readline.Result, 1)
 		go func() {
 			line, err := editor.Readline()
@@ -66,6 +71,18 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 					printLine(stderr, colorError, "iota: "+err.Error())
 				} else {
 					printLine(stderr, colorThinking, "conversation reset")
+				}
+				continue
+			}
+			output := eventOutput{stdout: stdout, stderr: stderr, stdoutStyle: styleFor(stdout), stderrStyle: styleFor(stderr)}
+			handled, nextPrompt, err := planningCommand(line, agent, session, output.emit, stderr)
+			if err != nil {
+				printLine(stderr, colorError, "iota: "+err.Error())
+				continue
+			}
+			if handled {
+				if nextPrompt != "" {
+					_ = execute(agent, nextPrompt, signals, stdout, stderr, false, session)
 				}
 				continue
 			}

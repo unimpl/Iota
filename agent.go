@@ -21,20 +21,28 @@ var (
 // Agent 持有对话历史和工具定义；同一实例一次只能执行一个 Run。
 // mu 保护运行状态和消息，避免外部读取与执行并发时发生数据竞争。
 type Agent struct {
-	provider     Provider
-	model        string
-	systemPrompt string
-	tools        []compiledTool
-	maxTurns     int
+	provider         Provider
+	model            string
+	systemPrompt     string
+	tools            []compiledTool
+	maxTurns         int
+	plansDir         string
+	planTemplatePath string
 
-	mu       sync.Mutex
-	running  bool
-	messages []Message
+	mu            sync.Mutex
+	running       bool
+	messages      []Message
+	collaboration CollaborationState
 }
 
 // Run 执行一次用户输入，逐轮请求模型并按顺序执行工具，直到模型给出最终回复。
 // 同一 Agent 不允许并发 Run；取消时仍为已发出的工具调用补齐结果消息。
 func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result RunResult, runErr error) {
+	return a.run(ctx, prompt, emit, nil)
+}
+
+// run accepts a durable state writer when a Session owns this run.
+func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record func(Event) error) (result RunResult, runErr error) {
 	a.mu.Lock()
 	if a.running {
 		a.mu.Unlock()
@@ -67,22 +75,22 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 		emitEvent(emit, end)
 	}()
 
-	definitions := make([]ToolDefinition, len(a.tools))
-	for i, tool := range a.tools {
-		definitions[i] = ToolDefinition{Name: tool.tool.Name, Description: tool.tool.Description, Schema: append(json.RawMessage(nil), tool.tool.Schema...)}
-	}
-
 	for turn := 1; turn <= a.maxTurns; turn++ {
 		result.Turns = turn
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
 		emitEvent(emit, Event{Type: EventTurnStart, Turn: turn})
+		systemPrompt, err := a.collaborationPrompt(ctx)
+		if err != nil {
+			return result, err
+		}
 		request := Request{
+			Mode:         a.Mode(),
 			Model:        a.model,
-			SystemPrompt: a.systemPrompt,
+			SystemPrompt: systemPrompt,
 			Messages:     a.Messages(),
-			Tools:        definitions,
+			Tools:        a.activeToolDefinitions(),
 		}
 		// 事件记录使用独立副本，避免观察者意外改动实际发送的请求。
 		requestEvent := request
@@ -100,6 +108,9 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 			requestRecord.RawRequest = string(body)
 		}
 		emitEvent(emit, requestRecord)
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		response, err := a.provider.Stream(ctx, request, func(delta Delta) {
 			if delta.Reasoning != "" {
 				emitEvent(emit, Event{Type: EventReasoningDelta, Turn: turn, Reasoning: delta.Reasoning, RawChunk: delta.RawChunk})
@@ -155,7 +166,7 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit EmitFunc) (result R
 				return result, err
 			}
 			emitEvent(emit, Event{Type: EventToolStart, Turn: turn, ToolCall: cloneToolCallPointer(call)})
-			text, isError := a.executeTool(ctx, call)
+			text, isError := a.executeTool(ctx, call, turn, emit, record)
 			toolMessage := Message{Role: RoleTool, Content: text, ToolCallID: call.ID, ToolName: call.Name, IsError: isError}
 			a.appendMessage(toolMessage, turn, emit)
 			emitEvent(emit, Event{Type: EventToolEnd, Turn: turn, ToolCall: cloneToolCallPointer(call), ToolResult: text, IsError: isError})

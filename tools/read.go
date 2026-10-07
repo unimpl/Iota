@@ -28,6 +28,7 @@ var readSchema = json.RawMessage(`{
 func NewRead(cwd string) iota.Tool {
 	return iota.Tool{
 		Name:        "read",
+		ReadOnly:    true,
 		Description: "Read a UTF-8 text file. offset is a 1-based line number and limit is a maximum number of lines.",
 		Schema:      readSchema,
 		// offset 从第 1 行开始；省略 limit 或超出上限时使用默认行数限制。

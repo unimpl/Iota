@@ -16,7 +16,7 @@ import (
 )
 
 // defaultTools 是未显式配置时开放给模型的内置工具列表。
-const defaultTools = "read,write,edit,bash"
+const defaultTools = "read,list,write,edit,bash,save_plan,update_plan"
 
 // fileConfig 对应 TOML 配置；指针和切片保留“未设置”与“显式置空”的区别。
 type fileConfig struct {
@@ -30,6 +30,7 @@ type fileConfig struct {
 	Timeout     string   `toml:"timeout"`
 	SaveSession *bool    `toml:"save_session"`
 	Resume      string   `toml:"resume"`
+	Mode        string   `toml:"mode"`
 }
 
 // loadConfig 获取用户目录和当前目录，供配置查找使用。
@@ -82,15 +83,20 @@ func loadConfigFrom(home, cwd string) (fileConfig, error) {
 // optionsFromConfig 用默认值补齐文件配置；空工具数组表示禁用全部工具。
 func optionsFromConfig(config fileConfig) (options, error) {
 	opts := options{
-		model:    config.Model,
-		baseURL:  config.BaseURL,
-		apiKey:   config.APIKey,
-		cwd:      ".",
-		system:   config.System,
-		tools:    defaultTools,
-		maxTurns: iota.DefaultMaxTurns,
-		timeout:  openaicompat.DefaultTimeout,
-		resume:   config.Resume,
+		model:         config.Model,
+		baseURL:       config.BaseURL,
+		apiKey:        config.APIKey,
+		cwd:           ".",
+		system:        config.System,
+		tools:         defaultTools,
+		maxTurns:      iota.DefaultMaxTurns,
+		timeout:       openaicompat.DefaultTimeout,
+		resume:        config.Resume,
+		mode:          string(iota.ModeDefault),
+		modeRequested: config.Mode != "",
+	}
+	if config.Mode != "" {
+		opts.mode = config.Mode
 	}
 	if config.SaveSession != nil {
 		opts.noSession = !*config.SaveSession
@@ -138,6 +144,10 @@ func applyEnvironment(opts *options, lookup func(string) (string, bool)) error {
 	setString("IOTA_SYSTEM", &opts.system)
 	setString("IOTA_TOOLS", &opts.tools)
 	setString("IOTA_RESUME", &opts.resume)
+	if value, ok := lookup("IOTA_MODE"); ok {
+		opts.mode = value
+		opts.modeRequested = true
+	}
 	if value, ok := lookup("IOTA_SAVE_SESSION"); ok {
 		save, err := strconv.ParseBool(value)
 		if err != nil {
