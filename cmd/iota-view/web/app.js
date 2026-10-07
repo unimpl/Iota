@@ -1,3 +1,7 @@
+import { timelineModes } from './timeline-modes.js';
+
+const modeLabels = { plan: 'Plan · 规划', default: 'Default · 默认' };
+
 // 页面节点只查询一次；重绘时复用外层容器并替换其中的内容。
 const shell = document.getElementById('shell');
 const sessionNav = document.getElementById('sessions');
@@ -394,6 +398,14 @@ function render() {
     records.filter(item => item.type === 'turn_start').length + ' 轮模型 · ' +
     records.filter(item => item.type === 'tool_start').length + ' 次工具调用'));
   timeline.append(counts);
+  const modes = timelineModes(records);
+  const currentMode = modes.get(records.at(-1)).mode;
+  const legend = node('div', 'mode-legend');
+  legend.setAttribute('aria-label', '时间线模式图例');
+  legend.append(node('span', 'mode-label mode-default', modeLabels.default));
+  legend.append(node('span', 'mode-label mode-plan', modeLabels.plan));
+  legend.append(node('span', 'current-mode', '最新模式：' + modeLabels[currentMode]));
+  timeline.append(legend);
   const list = node('ol', 'event-list');
   let activeTurn = null;
   for (const item of groupedEvents()) {
@@ -404,7 +416,7 @@ function render() {
     } else if (!activeTurn || record.run_id !== activeTurn.runID || turn !== activeTurn.turn || record.type === 'run_end') {
       activeTurn = null;
     }
-    const entry = renderEvent(item, activeTurn?.key, list);
+    const entry = renderEvent(item, activeTurn?.key, list, modes.get(record));
     if (activeTurn) {
       entry.dataset.turnKey = activeTurn.key;
       if (record.type === 'turn_start') entry.dataset.turnStart = 'true';
@@ -416,15 +428,17 @@ function render() {
 }
 
 // renderEvent 按事件类型生成摘要；详细 JSON 保持可展开，避免默认淹没时间线。
-function renderEvent(item, turnKey, list) {
+function renderEvent(item, turnKey, list, modeState) {
   const record = item.record || item.records[0];
   const last = item.records?.at(-1) || record;
   const payload = record.payload || {};
-  const entry = node('li', 'event-entry event-' + record.type);
+  const entry = node('li', 'event-entry event-' + record.type + ' mode-' + modeState.mode);
   const rail = node('div', 'event-rail');
+  rail.append(node('span', 'event-mode', modeState.mode === 'plan' ? 'PLAN' : 'DEFAULT'));
   rail.append(node('span', 'event-seq', record.seq === last.seq ? '#' + record.seq : '#' + record.seq + '–' + last.seq));
   const time = node('time', 'event-time', clockTime(record.timestamp));
   time.dateTime = record.timestamp || '';
+  time.title = modeLabels[modeState.mode] + ' · ' + formatTime(record.timestamp);
   rail.append(time);
   if (payload.turn && record.type !== 'run_end') {
     const label = 'Turn ' + payload.turn;
@@ -517,8 +531,34 @@ function renderEvent(item, turnKey, list) {
       badge.textContent = 'RESET'; title.textContent = '对话上下文重置';
       summary('后续模型请求从新的消息历史开始。');
       break;
+    case 'mode_changed':
+      badge.textContent = 'MODE';
+      title.textContent = modeState.previous === modeState.mode ? '进入 ' + modeLabels[modeState.mode] :
+        modeLabels[modeState.previous] + ' → ' + modeLabels[modeState.mode];
+      summary(modeState.mode === 'plan' ? '已进入规划模式，后续事件沿蓝色时间线显示。' : '已回到默认模式，后续事件沿绿色时间线显示。切换模式不会自动开始执行计划。');
+      break;
+    case 'plan_approved':
+      badge.textContent = 'APPROVED'; title.textContent = '计划已批准 · 切换至 ' + modeLabels[modeState.mode];
+      summary(payload.collaboration?.plan?.path);
+      break;
+    case 'plan_saved':
+      badge.textContent = 'PLAN'; title.textContent = '规划文档已保存';
+      summary(payload.collaboration?.plan?.path);
+      break;
+    case 'plan_updated': {
+      badge.textContent = 'PLAN'; title.textContent = '执行步骤已更新';
+      const progress = payload.collaboration?.progress;
+      summary(progress?.explanation);
+      if (progress?.plan?.length) {
+        const steps = node('ul', 'plan-steps');
+        const statuses = { pending: '待执行', in_progress: '进行中', completed: '已完成' };
+        for (const step of progress.plan) steps.append(node('li', '', (statuses[step.status] || step.status) + ' · ' + step.step));
+        content.append(steps);
+      }
+      break;
+    }
     case 'run_start':
-      badge.textContent = 'RUN'; title.textContent = '任务开始';
+      badge.textContent = 'RUN'; title.textContent = modeState.mode === 'plan' ? '规划任务开始' : '默认模式任务开始';
       summary('任务 ID ' + (record.run_id || '未知'));
       break;
     case 'run_end': {
