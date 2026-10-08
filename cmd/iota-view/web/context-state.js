@@ -1,3 +1,5 @@
+import { inputFromSummaryRequest } from './compaction-input.js';
+
 // Reconstruct the effective context without mixing raw history with checkpoints.
 export function contextState(records) {
   let context = null;
@@ -6,6 +8,7 @@ export function contextState(records) {
   let status = 'idle';
   let error = '';
   let count = 0;
+  let attempt = null;
   for (const record of records) {
     const payload = record.payload || {};
     switch (record.type) {
@@ -15,6 +18,7 @@ export function contextState(records) {
         summaryCheckpoint = null;
         status = 'idle';
         error = '';
+        attempt = null;
         break;
       case 'model_request':
         context = { ...payload.request, messages: [...(payload.request?.messages || [])] };
@@ -28,6 +32,22 @@ export function contextState(records) {
       case 'compaction_start':
         status = 'running';
         error = '';
+        attempt = { start: record, input: null, inputSeq: record.seq, result: null, summary: '' };
+        break;
+      case 'compaction_prepared':
+        if (attempt) {
+          attempt.input = payload.compaction_input;
+          attempt.inputSeq = record.seq;
+        }
+        break;
+      case 'compaction_request':
+        if (attempt && !attempt.input) {
+          attempt.input = inputFromSummaryRequest(payload.request, attempt.start?.payload?.compaction);
+          attempt.inputSeq = record.seq;
+        }
+        break;
+      case 'compaction_delta':
+        if (attempt && payload.reason === 'summary_complete') attempt.summary = payload.text || '';
         break;
       case 'context_compacted':
         if (payload.compaction?.context) {
@@ -40,8 +60,9 @@ export function contextState(records) {
       case 'compaction_end':
         status = payload.is_error ? 'failed' : 'idle';
         error = payload.error || '';
+        if (attempt) attempt.result = record;
         break;
     }
   }
-  return { context, checkpoint, summaryCheckpoint, status, error, count };
+  return { context, checkpoint, summaryCheckpoint, status, error, count, attempt };
 }

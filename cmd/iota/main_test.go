@@ -141,6 +141,7 @@ func TestFormatRunErrorAddsResetHint(t *testing.T) {
 
 // TestRunWithPipedInput 验证管道输入可触发单次运行并输出模型文本。
 func TestRunWithPipedInput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
@@ -260,6 +261,7 @@ func TestRunOptionalSession(t *testing.T) {
 
 // TestRunRejectsPromptWithPipedInput 防止同时从参数和管道获取提示而产生歧义。
 func TestRunRejectsPromptWithPipedInput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	stdin, err := os.CreateTemp(t.TempDir(), "prompt")
 	if err != nil {
 		t.Fatal(err)

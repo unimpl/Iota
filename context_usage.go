@@ -15,18 +15,22 @@ type ContextUsage struct {
 
 func estimateContextUsage(request Request, limit int) ContextUsage {
 	data, _ := json.Marshal(request)
+	usage := ContextUsage{Tokens: estimateTextTokens(string(data)), Estimated: true}
+	return withContextLimit(usage, limit)
+}
+
+func estimateTextTokens(text string) int {
 	// Approximate ASCII at four characters per token and non-ASCII at one.
 	// This is display information, never a trigger or proof that a request fits.
 	units := 0
-	for _, character := range string(data) {
+	for _, character := range text {
 		if character <= 127 {
 			units++
 		} else {
 			units += 4
 		}
 	}
-	usage := ContextUsage{Tokens: (units + 3) / 4, Estimated: true}
-	return withContextLimit(usage, limit)
+	return (units + 3) / 4
 }
 
 func withContextLimit(usage ContextUsage, limit int) ContextUsage {

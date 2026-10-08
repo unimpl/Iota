@@ -77,12 +77,46 @@ func (o *eventOutput) emit(event iota.Event) {
 	case iota.EventCompactionStart:
 		message := "compacting context (" + event.Reason + ")"
 		if state := event.Compaction; state != nil {
-			message += ": current " + formatContextUsage(state.BeforeUsage, state.ContextLimitTokens)
+			message += ": current " + formatContextUsage(state.BeforeUsage, state.ContextLimitTokens) + " (full request, not the selected old history)"
 		}
 		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, message))
+	case iota.EventCompactionPrepared:
+		input := event.CompactionInput
+		if input == nil {
+			break
+		}
+		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("selected old history: %d user turns, %d messages, %d characters, approximately %d tokens", input.UserTurns, len(input.Messages), input.Chars, input.Usage.Tokens)))
+		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("protected recent history: %d user turns, %d messages; system instructions and tool definitions stay separate", input.KeptTurns, input.KeptMessages)))
+		if input.HasPreviousSummary {
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "selected history also includes the previous checkpoint summary"))
+		}
+		for index, message := range input.Messages {
+			if index == 5 {
+				fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("  … %d more messages; inspect compaction_prepared in the session viewer", len(input.Messages)-index)))
+				break
+			}
+			text := message.Content
+			if text == "" && len(message.ToolCalls) > 0 {
+				data, _ := json.Marshal(message.ToolCalls)
+				text = string(data)
+			}
+			characters := []rune(text)
+			if len(characters) > 160 {
+				text = string(characters[:160]) + "…"
+			}
+			label := string(message.Role)
+			if message.ContextSummary {
+				label = "previous summary"
+			}
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("  [%s] %q", label, text)))
+		}
 	case iota.EventCompactionEnd:
 		if event.IsError {
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorError, "compaction failed: "+event.Error))
+			if state := event.Compaction; state != nil && state.AfterChars > 0 {
+				fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "full context before: "+formatContextUsage(state.BeforeUsage, state.ContextLimitTokens)))
+				fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "candidate full context (not applied): "+formatContextUsage(state.AfterUsage, state.ContextLimitTokens)))
+			}
 		} else if state := event.Compaction; state != nil {
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("context compacted (%s): %d → %d characters; kept %d recent turns", state.Stage, state.BeforeChars, state.AfterChars, state.KeptTurns)))
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "context before: "+formatContextUsage(state.BeforeUsage, state.ContextLimitTokens)))

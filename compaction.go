@@ -27,6 +27,18 @@ Preserve exact file paths, identifiers, error messages, unresolved questions, an
 
 var ErrNothingToCompact = errors.New("nothing to compact outside the protected recent turns")
 
+// CompactionInput identifies only the older messages selected for processing.
+// Protected messages and authoritative instructions are not included in Messages.
+type CompactionInput struct {
+	Messages           []Message    `json:"messages"`
+	UserTurns          int          `json:"user_turns"`
+	HasPreviousSummary bool         `json:"has_previous_summary"`
+	Chars              int          `json:"chars"`
+	Usage              ContextUsage `json:"usage"`
+	KeptMessages       int          `json:"kept_messages"`
+	KeptTurns          int          `json:"kept_turns"`
+}
+
 // CompactionState is a complete model-context checkpoint. Raw events remain in the log.
 // Character counts measure serialized requests, not provider token counts.
 type CompactionState struct {
@@ -117,6 +129,11 @@ func (a *Agent) compact(ctx context.Context, instructions, trigger string, force
 		if compactErr != nil {
 			event.IsError = true
 			event.Error = compactErr.Error()
+			// Diagnostics describe an uncommitted candidate, never an active checkpoint.
+			diagnostics := state
+			diagnostics.Context = Request{}
+			diagnostics.SummaryPath = ""
+			event.Compaction = &diagnostics
 		} else {
 			event.Compaction = &state
 		}
@@ -136,6 +153,23 @@ func (a *Agent) compact(ctx context.Context, instructions, trigger string, force
 		return state, errors.New("cannot compact while tool results are pending")
 	}
 	cut, kept := recentTurnBoundary(request.Messages, a.keepRecentTurns)
+	input := CompactionInput{Messages: cloneMessages(request.Messages[:cut]), KeptMessages: len(request.Messages) - cut, KeptTurns: kept}
+	for _, message := range input.Messages {
+		if message.ContextSummary {
+			input.HasPreviousSummary = true
+		} else if message.Role == RoleUser {
+			input.UserTurns++
+		}
+	}
+	inputText, err := json.Marshal(input.Messages)
+	if err != nil {
+		return state, err
+	}
+	input.Chars = len([]rune(string(inputText)))
+	if len(input.Messages) > 0 {
+		input.Usage = ContextUsage{Tokens: estimateTextTokens(string(inputText)), Estimated: true}
+	}
+	emitEvent(emit, Event{Type: EventCompactionPrepared, Turn: turn, Reason: trigger, CompactionInput: &input})
 	if cut == 0 || (trigger == "manual" && cut == 1 && request.Messages[0].ContextSummary && strings.TrimSpace(instructions) == "") {
 		return state, ErrNothingToCompact
 	}
@@ -178,7 +212,7 @@ func (a *Agent) compact(ctx context.Context, instructions, trigger string, force
 	state.AfterUsage = estimateContextUsage(state.Context, state.ContextLimitTokens)
 	state.BeforeUsage = withContextLimit(state.BeforeUsage, state.ContextLimitTokens)
 	if state.AfterChars >= state.BeforeChars {
-		return state, errors.New("compaction did not reduce context; history was preserved")
+		return state, fmt.Errorf("compaction did not reduce context: full request %d -> %d characters; history was preserved", state.BeforeChars, state.AfterChars)
 	}
 	if err := ctx.Err(); err != nil {
 		return state, err

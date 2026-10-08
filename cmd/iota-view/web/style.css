@@ -68,6 +68,8 @@ pre { margin:10px 0 0; padding:14px; max-height:480px; overflow:auto; border-rad
 .context-summary { max-height:240px; font-size:12px; }
 .context-note { margin:12px 0 0; color:var(--muted); font-size:12px; line-height:1.6; }
 .context-usage { margin:12px 0 0; font-size:13px; line-height:1.6; font-variant-numeric:tabular-nums; }
+.compaction-scope { margin:12px 0; padding:12px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+.compaction-preview { margin:10px 0 0; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
 .summary-file { margin-top:16px; }
 .summary-path { margin:0 0 8px; color:var(--muted); font:12px/1.6 var(--mono); overflow-wrap:anywhere; }
 .summary-link { color:var(--green); font-size:12px; text-underline-offset:3px; }

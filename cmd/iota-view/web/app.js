@@ -1,6 +1,7 @@
 import { timelineModes } from './timeline-modes.js';
 import { contextState } from './context-state.js';
 import { usageLabel } from './context-usage.js';
+import { inputFromSummaryRequest } from './compaction-input.js';
 
 const modeLabels = { plan: 'Plan · 规划', default: 'Default · 默认' };
 
@@ -543,24 +544,39 @@ function renderEvent(item, turnKey, list, modeState) {
       badge.textContent = 'COMPACT';
       title.textContent = payload.reason === 'overflow' ? '上下文超限 · 开始自动压缩' : '开始手动压缩上下文';
       summary('先裁剪旧工具结果，必要时生成历史摘要。最近轮次保持原文。');
-      if (payload.compaction) summary('当前：' + usageLabel(payload.compaction.before_usage, payload.compaction.context_limit_tokens));
+      if (payload.compaction) summary('当前完整请求（不是全部要总结的内容）：' + usageLabel(payload.compaction.before_usage, payload.compaction.context_limit_tokens));
+      break;
+    case 'compaction_prepared':
+      badge.textContent = 'SCOPE'; title.textContent = '已选定待压缩的旧历史';
+      if (payload.compaction_input) content.append(renderCompactionInput(payload.compaction_input, record.seq));
       break;
     case 'compaction_request':
       badge.textContent = 'SUMMARY'; title.textContent = '向模型请求历史摘要';
       summary('摘要请求不提供工具，不执行规划或编码任务。');
+      {
+        const input = inputFromSummaryRequest(payload.request);
+        if (input) content.append(renderCompactionInput(input, record.seq));
+      }
       if (payload.raw_request) content.append(rawRequestDisclosure(record));
       content.append(disclosure('查看摘要请求', 'request-' + record.seq, () => renderRequest(payload.request || {}, record.seq)));
       break;
     case 'compaction_delta':
       badge.textContent = payload.is_error ? 'ERROR' : 'SUMMARY';
       title.textContent = payload.is_error ? '摘要请求失败' : '本段摘要已生成';
-      summary(payload.is_error ? payload.error : payload.usage ? '输入 ' + payload.usage.prompt_tokens + ' / 输出 ' + payload.usage.completion_tokens + ' tokens' : '服务端未返回摘要用量。', payload.is_error ? 'event-summary error-text' : 'event-summary');
+      summary(payload.is_error ? payload.error : payload.usage ? '摘要调用用量：输入 ' + payload.usage.prompt_tokens + ' / 输出 ' + payload.usage.completion_tokens + ' tokens；不是压缩后的完整上下文用量。' : '服务端未返回摘要用量。', payload.is_error ? 'event-summary error-text' : 'event-summary');
       if (payload.text) content.append(textDisclosure('查看生成的摘要', payload.text, 'summary-' + record.seq));
       break;
     case 'compaction_end':
       badge.textContent = payload.is_error ? 'ERROR' : 'COMPACT';
       title.textContent = payload.is_error ? '上下文压缩失败' : '上下文压缩完成';
       summary(payload.is_error ? payload.error : '检查点已写入。下一次正常模型请求使用压缩后的上下文。', payload.is_error ? 'event-summary error-text' : 'event-summary');
+      if (payload.is_error && payload.compaction?.after_chars > 0) {
+        const candidate = payload.compaction;
+        summary('完整请求字符数：' + candidate.before_chars + ' → ' + candidate.after_chars + '；候选结果未应用。');
+        summary('原上下文：' + usageLabel(candidate.before_usage, candidate.context_limit_tokens));
+        summary('候选完整上下文（未应用）：' + usageLabel(candidate.after_usage, candidate.context_limit_tokens));
+        if (candidate.summary) content.append(textDisclosure('查看未应用的候选摘要', candidate.summary, 'failed-summary-' + record.seq));
+      }
       break;
     case 'context_compacted': {
       const state = payload.compaction || {};
@@ -728,6 +744,17 @@ function renderContext(state) {
   if (info?.before_usage) section.append(node('p', 'context-usage', '压缩前：' + usageLabel(info.before_usage, info.context_limit_tokens)));
   if (info?.after_usage) section.append(node('p', 'context-usage', '压缩后：' + usageLabel(info.after_usage, info.context_limit_tokens)));
   if (state.error) section.append(node('p', 'error-text', state.error));
+  if (state.attempt?.input) {
+    const attempt = state.attempt;
+    section.append(node('h3', '', '最近一次压缩的实际处理范围'));
+    section.append(renderCompactionInput(attempt.input, attempt.inputSeq));
+    if (attempt.result?.payload?.is_error) {
+      section.append(node('p', 'error-text', '这次候选结果未应用，原有历史未被替换。'));
+      const candidate = attempt.result.payload.compaction;
+      if (candidate?.after_chars > 0) section.append(node('p', 'context-usage', '完整请求字符数：' + candidate.before_chars + ' → ' + candidate.after_chars));
+      if (attempt.summary) section.append(textDisclosure('查看未应用的候选摘要', attempt.summary, 'attempt-summary-' + attempt.inputSeq));
+    }
+  }
   const summary = request.messages?.find(message => message.context_summary);
   if (summary) {
     section.append(node('h3', '', '保留的历史摘要'));
@@ -739,6 +766,34 @@ function renderContext(state) {
   section.append(disclosure('查看当前消息、系统提示和工具', 'effective-context', () => renderRequest(request, 'effective')));
   if (info) section.append(node('p', 'context-note', '原始历史仍保留在下方。Token 用量和可用百分比为估算；上限未知时不计算百分比。压缩前后用量对应检查点，后续消息可能增加用量。'));
   return section;
+}
+
+function renderCompactionInput(input, seq) {
+  const body = node('div', 'compaction-scope');
+  const messages = input.messages || [];
+  body.append(node('p', 'context-usage', '旧历史：' + input.user_turns + ' 轮用户请求 · ' + messages.length + ' 条消息 · ' + input.chars + ' 个序列化字符 · 约 ' + (input.usage?.tokens || 0) + ' tokens'));
+  if (input.has_previous_summary) body.append(node('p', 'context-note', '处理范围还包含已有历史摘要。'));
+  if (input.kept_turns != null) body.append(node('p', 'context-usage', '保留原文：最近 ' + input.kept_turns + ' 轮 · ' + input.kept_messages + ' 条消息，不进入本次摘要。'));
+  body.append(node('p', 'context-note', input.source === 'summary_request' ? '以下是实际送去摘要的旧历史，不包含最近保留轮次；旧工具结果可能已经裁剪。' : '以下是旧历史的处理范围；先裁剪其中的旧工具结果，必要时再生成摘要。系统提示与工具定义独立保留。'));
+  for (const message of messages.slice(0, 2)) {
+    if (message.content) {
+      const characters = Array.from(message.content.replace(/\s+/g, ' ').trim());
+      body.append(node('p', 'compaction-preview', (message.context_summary ? '已有摘要' : message.role) + '：' + characters.slice(0, 80).join('') + (characters.length > 80 ? '…' : '')));
+    }
+  }
+  body.append(disclosure('查看实际待压缩的消息原文', 'compaction-input-' + seq, () => {
+    const view = node('div', 'request-view');
+    messages.forEach((message, index) => {
+      const row = node('div', 'request-message');
+      row.append(node('span', 'role-label', message.context_summary ? '已有摘要' : message.role));
+      const text = node('div', 'detail-text', message.content || '（无文本）');
+      if (message.tool_calls?.length) text.append(textDisclosure('查看工具调用参数', message.tool_calls, 'input-calls-' + seq + '-' + index));
+      row.append(text);
+      view.append(row);
+    });
+    return view;
+  }));
+  return body;
 }
 
 function renderSummaryFile(state, seq) {
