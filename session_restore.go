@@ -87,6 +87,17 @@ func (s *Session) read() error {
 				return fmt.Errorf("invalid message at record %d", s.seq)
 			}
 			s.messages = append(s.messages, *event.Message)
+		case string(EventContextCompacted):
+			var event Event
+			if err := json.Unmarshal(record.Payload, &event); err != nil || event.Type != EventContextCompacted || event.Compaction == nil {
+				return fmt.Errorf("invalid compaction event at record %d", s.seq)
+			}
+			if err := validateCompaction(*event.Compaction); err != nil {
+				return fmt.Errorf("invalid compaction event at record %d: %w", s.seq, err)
+			}
+			s.messages = cloneMessages(event.Compaction.Context.Messages)
+			s.contextLimitTokens = event.Compaction.ContextLimitTokens
+			s.contextLimitModel = event.Compaction.Context.Model
 		}
 	}
 	if s.seq == 0 {

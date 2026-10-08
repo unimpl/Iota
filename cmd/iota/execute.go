@@ -51,7 +51,7 @@ func formatRunError(err error) string {
 	message := err.Error()
 	lower := strings.ToLower(message)
 	if strings.Contains(lower, "context") && (strings.Contains(lower, "length") || strings.Contains(lower, "token")) {
-		return message + "; use /reset to clear the in-memory conversation"
+		return message + "; use /compact to summarize older context, or /reset to clear the in-memory conversation"
 	}
 	return message
 }

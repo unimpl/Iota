@@ -1,4 +1,6 @@
 import { timelineModes } from './timeline-modes.js';
+import { contextState } from './context-state.js';
+import { usageLabel } from './context-usage.js';
 
 const modeLabels = { plan: 'Plan · 规划', default: 'Default · 默认' };
 
@@ -31,6 +33,8 @@ let renderPending = false;
 // 展开状态按事件和轮次分别记录，重绘后才能保持用户的查看位置。
 const expanded = new Set();
 const expandedTurns = new Set();
+// Immutable snapshots are loaded on demand and reused while this session is selected.
+const summaryPreviews = new Map();
 
 // 侧栏切换同步更新无障碍状态，供键盘和屏幕阅读器使用。
 toggle.addEventListener('click', () => {
@@ -208,6 +212,7 @@ function updateSessions(next) {
     records = [];
     expanded.clear();
     expandedTurns.clear();
+    summaryPreviews.clear();
     scheduleRender();
     setConnection('尚无 session');
   }
@@ -304,6 +309,7 @@ function selectSession(name) {
   records = [];
   expanded.clear();
   expandedTurns.clear();
+  summaryPreviews.clear();
   renderSessionList();
   scheduleRender();
   setConnection('正在连接');
@@ -314,7 +320,7 @@ function selectSession(name) {
     try { records.push(JSON.parse(event.data)); scheduleRender(); }
     catch { setConnection('记录格式有误', 'error'); }
   };
-  source.addEventListener('reset', () => { records = []; expanded.clear(); expandedTurns.clear(); scheduleRender(); });
+  source.addEventListener('reset', () => { records = []; expanded.clear(); expandedTurns.clear(); summaryPreviews.clear(); scheduleRender(); });
   if (window.innerWidth <= 700) {
     shell.classList.add('sidebar-hidden');
     toggle.setAttribute('aria-expanded', 'false');
@@ -355,12 +361,12 @@ function groupedEvents() {
   for (const record of records) {
     const previous = result.at(-1);
     const reasoning = reasoningChunk(record);
-    const kind = reasoning ? 'reasoning' : record.type;
-    if ((kind === 'text_delta' || kind === 'tool_call_delta' || kind === 'reasoning') && previous?.kind === kind &&
+    const kind = record.type === 'compaction_delta' && !record.payload?.is_error && record.payload?.reason !== 'summary_complete' ? 'compaction_stream' : reasoning ? 'reasoning' : record.type;
+    if ((kind === 'text_delta' || kind === 'tool_call_delta' || kind === 'reasoning' || kind === 'compaction_stream') && previous?.kind === kind &&
         previous.runID === record.run_id && previous.turn === record.payload?.turn) {
       previous.records.push(record);
       if (reasoning) previous.text += reasoning;
-    } else if (kind === 'text_delta' || kind === 'tool_call_delta' || kind === 'reasoning') {
+    } else if (kind === 'text_delta' || kind === 'tool_call_delta' || kind === 'reasoning' || kind === 'compaction_stream') {
       result.push({ kind, runID: record.run_id, turn: record.payload?.turn, records: [record], text: reasoning });
     } else {
       result.push({ kind: 'event', record });
@@ -392,6 +398,8 @@ function render() {
     timeline.append(node('p', 'empty', '正在等待执行记录……'));
     return;
   }
+  const effective = contextState(records);
+  timeline.append(renderContext(effective));
   const counts = node('div', 'timeline-counts');
   counts.append(node('strong', '', records.length + ' 条事件'));
   counts.append(node('span', '', records.filter(item => item.type === 'run_start').length + ' 次任务 · ' +
@@ -411,13 +419,14 @@ function render() {
   for (const item of groupedEvents()) {
     const record = item.record || item.records[0];
     const turn = record.payload?.turn;
+    const compaction = record.type.startsWith('compaction_') || record.type === 'context_compacted';
     if (record.type === 'turn_start' && turn) {
       activeTurn = { key: record.run_id + ':' + record.seq, runID: record.run_id, turn };
     } else if (!activeTurn || record.run_id !== activeTurn.runID || turn !== activeTurn.turn || record.type === 'run_end') {
       activeTurn = null;
     }
     const entry = renderEvent(item, activeTurn?.key, list, modes.get(record));
-    if (activeTurn) {
+    if (activeTurn && !compaction) {
       entry.dataset.turnKey = activeTurn.key;
       if (record.type === 'turn_start') entry.dataset.turnStart = 'true';
       else entry.hidden = !expandedTurns.has(activeTurn.key);
@@ -480,6 +489,17 @@ function renderEvent(item, turnKey, list, modeState) {
     if (value) content.append(node('p', className, value));
   };
 
+  if (item.kind === 'compaction_stream') {
+    badge.textContent = 'SUMMARY';
+    title.textContent = '正在生成压缩摘要 · ' + item.records.length + ' 个片段';
+    content.append(textDisclosure('查看摘要生成过程', item.records.map(part => part.payload?.text || part.payload?.reasoning || '').join(''), 'compaction-stream-' + record.seq));
+    content.append(disclosure('查看摘要原始流事件', 'compaction-chunks-' + record.seq, () => {
+      const body = node('div', 'chunk-list');
+      for (const part of item.records) body.append(jsonDisclosure(part));
+      return body;
+    }));
+    return entry;
+  }
   if (item.kind === 'text_delta' || item.kind === 'tool_call_delta' || item.kind === 'reasoning') {
     const isToolCall = item.kind === 'tool_call_delta';
     const isReasoning = item.kind === 'reasoning';
@@ -519,6 +539,42 @@ function renderEvent(item, turnKey, list, modeState) {
   }
 
   switch (record.type) {
+    case 'compaction_start':
+      badge.textContent = 'COMPACT';
+      title.textContent = payload.reason === 'overflow' ? '上下文超限 · 开始自动压缩' : '开始手动压缩上下文';
+      summary('先裁剪旧工具结果，必要时生成历史摘要。最近轮次保持原文。');
+      if (payload.compaction) summary('当前：' + usageLabel(payload.compaction.before_usage, payload.compaction.context_limit_tokens));
+      break;
+    case 'compaction_request':
+      badge.textContent = 'SUMMARY'; title.textContent = '向模型请求历史摘要';
+      summary('摘要请求不提供工具，不执行规划或编码任务。');
+      if (payload.raw_request) content.append(rawRequestDisclosure(record));
+      content.append(disclosure('查看摘要请求', 'request-' + record.seq, () => renderRequest(payload.request || {}, record.seq)));
+      break;
+    case 'compaction_delta':
+      badge.textContent = payload.is_error ? 'ERROR' : 'SUMMARY';
+      title.textContent = payload.is_error ? '摘要请求失败' : '本段摘要已生成';
+      summary(payload.is_error ? payload.error : payload.usage ? '输入 ' + payload.usage.prompt_tokens + ' / 输出 ' + payload.usage.completion_tokens + ' tokens' : '服务端未返回摘要用量。', payload.is_error ? 'event-summary error-text' : 'event-summary');
+      if (payload.text) content.append(textDisclosure('查看生成的摘要', payload.text, 'summary-' + record.seq));
+      break;
+    case 'compaction_end':
+      badge.textContent = payload.is_error ? 'ERROR' : 'COMPACT';
+      title.textContent = payload.is_error ? '上下文压缩失败' : '上下文压缩完成';
+      summary(payload.is_error ? payload.error : '检查点已写入。下一次正常模型请求使用压缩后的上下文。', payload.is_error ? 'event-summary error-text' : 'event-summary');
+      break;
+    case 'context_compacted': {
+      const state = payload.compaction || {};
+      badge.textContent = 'CHECKPOINT';
+      title.textContent = '已应用' + (state.stage === 'summary' ? '历史摘要' : '工具结果裁剪') + ' · ' + state.before_chars + ' → ' + state.after_chars + ' 字符';
+      summary('消息 ' + state.before_messages + ' → ' + state.after_messages + ' · 保留最近 ' + state.kept_turns + ' 轮原文 · 裁剪 ' + state.trimmed_tool_results + ' 份工具结果 · 总结 ' + state.summarized_messages + ' 条旧消息');
+      summary('压缩前：' + usageLabel(state.before_usage, state.context_limit_tokens));
+      summary('压缩后：' + usageLabel(state.after_usage, state.context_limit_tokens));
+      if (state.instructions) summary('摘要重点：' + state.instructions);
+      if (state.summary) content.append(textDisclosure('查看历史摘要', state.summary, 'checkpoint-summary-' + record.seq));
+      if (state.summary_path) content.append(renderSummaryFile(state, record.seq));
+      content.append(disclosure('查看压缩后的完整上下文', 'checkpoint-' + record.seq, () => renderRequest(state.context || {}, record.seq)));
+      break;
+    }
     case 'session_start':
       badge.textContent = 'SESSION'; title.textContent = '会话创建';
       summary('模型 ' + (payload.model || '未知') + ' · 工作目录 ' + (payload.cwd || '未知'));
@@ -609,6 +665,10 @@ function renderEvent(item, turnKey, list, modeState) {
       summary('结束原因 ' + (payload.reason || '未知') + (usage ? ' · 输入 ' + usage.prompt_tokens + ' / 输出 ' + usage.completion_tokens + ' / 合计 ' + usage.total_tokens + ' tokens' : ''));
       break;
     }
+    case 'model_error':
+      badge.textContent = 'ERROR'; title.textContent = '模型请求被拒绝或失败';
+      summary(payload.error, 'event-summary error-text');
+      break;
     case 'message_added': {
       const message = payload.message || {};
       badge.textContent = message.role === 'user' ? 'USER' : message.role === 'tool' ? 'TOOL' : 'AGENT';
@@ -643,6 +703,81 @@ function renderEvent(item, turnKey, list, modeState) {
   return entry;
 }
 
+// Keep the latest effective state visible above the historical event stream.
+function renderContext(state) {
+  const section = node('section', 'context-state');
+  section.setAttribute('aria-label', '当前有效上下文');
+  const heading = node('h2', '', '当前上下文');
+  const status = node('p', 'context-status');
+  status.setAttribute('role', 'status');
+  status.textContent = state.status === 'running' ? '正在压缩，完成后更新上下文。' :
+    state.status === 'failed' ? '最近一次压缩失败，保留上次有效上下文。' :
+    state.checkpoint ? '已应用压缩检查点 · #' + state.checkpoint.seq : '完整对话 · 尚无压缩检查点';
+  section.append(heading, status);
+  const request = state.context || {};
+  const info = state.checkpoint?.payload?.compaction;
+  const facts = node('div', 'context-facts');
+  facts.append(node('span', '', (request.messages?.length || 0) + ' 条有效消息'));
+  if (request.mode) facts.append(node('span', '', modeLabels[request.mode] || request.mode));
+  if (info) {
+    facts.append(node('span', '', '保护最近 ' + info.keep_recent_turns + ' 轮原文'));
+    facts.append(node('span', '', '已压缩 ' + state.count + ' 次'));
+    if (info.context_limit_tokens) facts.append(node('span', '', '服务端报告上限 ' + info.context_limit_tokens.toLocaleString() + ' tokens'));
+  }
+  section.append(facts);
+  if (info?.before_usage) section.append(node('p', 'context-usage', '压缩前：' + usageLabel(info.before_usage, info.context_limit_tokens)));
+  if (info?.after_usage) section.append(node('p', 'context-usage', '压缩后：' + usageLabel(info.after_usage, info.context_limit_tokens)));
+  if (state.error) section.append(node('p', 'error-text', state.error));
+  const summary = request.messages?.find(message => message.context_summary);
+  if (summary) {
+    section.append(node('h3', '', '保留的历史摘要'));
+    const text = info?.summary || summary.content.replace(/^Earlier conversation checkpoint[^\n]*:\n<summary>\n/, '').replace(/\n<\/summary>$/, '');
+    section.append(node('pre', 'context-summary', text));
+    const snapshot = state.summaryCheckpoint;
+    if (snapshot?.payload?.compaction?.summary_path) section.append(renderSummaryFile(snapshot.payload.compaction, snapshot.seq));
+  }
+  section.append(disclosure('查看当前消息、系统提示和工具', 'effective-context', () => renderRequest(request, 'effective')));
+  if (info) section.append(node('p', 'context-note', '原始历史仍保留在下方。Token 用量和可用百分比为估算；上限未知时不计算百分比。压缩前后用量对应检查点，后续消息可能增加用量。'));
+  return section;
+}
+
+function renderSummaryFile(state, seq) {
+  const body = node('div', 'summary-file');
+  body.append(node('p', 'summary-path', state.summary_path));
+  const name = selected;
+  const url = '/api/summary?name=' + encodeURIComponent(name) + '&event=' + encodeURIComponent(state.event_id || seq);
+  const link = node('a', 'summary-link', '打开摘要 Markdown');
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener';
+  body.append(link);
+  body.append(disclosure('预览摘要文件', 'summary-file-' + seq, () => {
+    const preview = node('div', 'summary-preview');
+    const status = node('p', 'context-note', '正在读取摘要文件…');
+    status.setAttribute('role', 'status');
+    preview.append(status);
+    let loaded = summaryPreviews.get(url);
+    if (!loaded) {
+      loaded = fetch(url, { cache: 'no-store' }).then(response => {
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.text();
+      });
+      summaryPreviews.set(url, loaded);
+    }
+    loaded.then(text => {
+      if (selected !== name) return;
+      preview.replaceChildren(node('pre', '', text));
+    }).catch(error => {
+      if (summaryPreviews.get(url) === loaded) summaryPreviews.delete(url);
+      if (selected !== name) return;
+      status.className = 'error-text';
+      status.textContent = '摘要文件读取失败：' + error.message + '。JSONL 中的摘要仍可查看。';
+    });
+    return preview;
+  }));
+  return body;
+}
+
 // renderRequest 展示系统提示、消息和工具摘要，并保留完整请求 JSON 供核对。
 function renderRequest(request, seq) {
   const body = node('div', 'request-view');
@@ -653,7 +788,7 @@ function renderRequest(request, seq) {
   body.append(node('div', 'detail-label', '消息历史 · ' + (request.messages?.length || 0)));
   for (const message of request.messages || []) {
     const row = node('div', 'request-message');
-    row.append(node('span', 'role-label', message.role || '未知'));
+    row.append(node('span', 'role-label', message.context_summary ? '历史摘要' : message.role || '未知'));
     row.append(node('span', 'detail-text', message.content || (message.tool_calls?.length ? '调用工具：' + message.tool_calls.map(call => call.name).join('、') : '（无文本）')));
     body.append(row);
   }

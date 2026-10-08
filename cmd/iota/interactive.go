@@ -75,6 +75,19 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 				continue
 			}
 			output := eventOutput{stdout: stdout, stderr: stderr, stdoutStyle: styleFor(stdout), stderrStyle: styleFor(stderr)}
+			if strings.Fields(line)[0] == "/compact" {
+				failedEvent := false
+				err := compactConversation(agent, session, strings.TrimSpace(strings.TrimPrefix(line, "/compact")), signals, func(event iota.Event) {
+					if event.Type == iota.EventCompactionEnd && event.IsError {
+						failedEvent = true
+					}
+					output.emit(event)
+				})
+				if err != nil && !failedEvent {
+					printLine(stderr, colorError, "iota: "+err.Error())
+				}
+				continue
+			}
 			handled, nextPrompt, err := planningCommand(line, agent, session, output.emit, stderr)
 			if err != nil {
 				printLine(stderr, colorError, "iota: "+err.Error())

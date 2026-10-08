@@ -221,15 +221,24 @@ Use update_plan, when available, to maintain an execution checklist with at most
 			label = "Saved plan file (reference only): "
 		}
 		guidance += "\n" + label + state.Plan.Path
+		guidance += "\n<saved-plan>\n" + state.Plan.Content + "\n</saved-plan>"
 	}
 	if state.Progress != nil {
 		data, _ := json.Marshal(state.Progress)
 		guidance += "\nCurrent execution checklist: " + string(data)
 	}
-	if a.systemPrompt == "" {
+	base := a.systemPrompt
+	if a.systemPromptLoader != nil {
+		var err error
+		base, err = a.systemPromptLoader(ctx)
+		if err != nil {
+			return "", err
+		}
+	}
+	if base == "" {
 		return guidance, nil
 	}
-	return a.systemPrompt + "\n\n" + guidance, nil
+	return base + "\n\n" + guidance, nil
 }
 
 // NewSavePlanTool declares the Agent-owned planning tool; its target path is never supplied by the model.

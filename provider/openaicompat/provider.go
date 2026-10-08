@@ -130,6 +130,7 @@ type streamChunk struct {
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
+		Code    string `json:"code"`
 	} `json:"error"`
 }
 
@@ -242,6 +243,9 @@ func consumeStream(reader io.Reader, emit func(iota.Delta)) (iota.Response, erro
 		if chunk.Error != nil {
 			if emit != nil {
 				emit(iota.Delta{RawChunk: line})
+			}
+			if chunk.Error.Code != "" {
+				return iota.Response{}, fmt.Errorf("provider error %s (%s): %s", chunk.Error.Type, chunk.Error.Code, chunk.Error.Message)
 			}
 			return iota.Response{}, fmt.Errorf("provider error %s: %s", chunk.Error.Type, chunk.Error.Message)
 		}

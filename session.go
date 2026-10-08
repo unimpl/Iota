@@ -24,16 +24,19 @@ type SessionInfo struct {
 // Session 保存执行事件并恢复对话。目录由调用方指定，同一文件只能有一个写入者。
 // 使用 Agent.Run 只保留内存历史，使用 Session.Run 才会写入会话文件。
 type Session struct {
-	operation     sync.Mutex
-	mu            sync.Mutex
-	file          *os.File
-	id            string
-	path          string
-	seq           uint64
-	err           error
-	closed        bool
-	messages      []Message
-	collaboration CollaborationState
+	operation          sync.Mutex
+	mu                 sync.Mutex
+	file               *os.File
+	id                 string
+	path               string
+	seq                uint64
+	err                error
+	closed             bool
+	messages           []Message
+	collaboration      CollaborationState
+	contextLimitTokens int
+	contextLimitModel  string
+	summaryDir         string
 }
 
 // sessionRecord 是单行 JSONL 的固定外壳；保留查看器使用的事件结构。
@@ -72,6 +75,26 @@ func NewSession(dir string, info SessionInfo) (*Session, error) {
 // Path 返回会话文件路径，不替调用方选择用户目录。
 func (s *Session) Path() string { return s.path }
 
+// SetSummaryDir selects the directory for derived Markdown snapshots.
+// By default the SDK uses the session directory; the CLI supplies ~/.iota/sessions.
+func (s *Session) SetSummaryDir(dir string) error {
+	if !s.operation.TryLock() {
+		return ErrBusy
+	}
+	defer s.operation.Unlock()
+	path, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.checkOpen(); err != nil {
+		return err
+	}
+	s.summaryDir = path
+	return nil
+}
+
 // Run 运行 Agent 并保存所有事件；nil Session 表示关闭持久化。
 // Agent 的历史必须与该会话一致；打开已有文件后先调用 Restore。
 func (s *Session) Run(ctx context.Context, agent *Agent, prompt string, emit EmitFunc) (RunResult, error) {
@@ -99,7 +122,7 @@ func (s *Session) Run(ctx context.Context, agent *Agent, prompt string, emit Emi
 		if !newSession {
 			return RunResult{}, errors.New("agent collaboration differs from session; call Session.Restore first")
 		}
-		if err := s.recordCollaboration("", Event{Type: EventModeChanged, Collaboration: &agentState}); err != nil {
+		if err := s.recordState("", Event{Type: EventModeChanged, Collaboration: &agentState}); err != nil {
 			return RunResult{}, err
 		}
 		emitEvent(emit, Event{Type: EventModeChanged, Collaboration: &agentState})
@@ -111,15 +134,15 @@ func (s *Session) Run(ctx context.Context, agent *Agent, prompt string, emit Emi
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	result, runErr := agent.run(ctx, prompt, func(event Event) {
-		// State events were already durably recorded by commitCollaboration.
-		if !isCollaborationEvent(event.Type) {
+		// State checkpoints were durably recorded before being published.
+		if !isCollaborationEvent(event.Type) && event.Type != EventContextCompacted {
 			if err := s.write(runID, string(event.Type), event); err != nil {
 				cancel()
 			}
 		}
 		emitEvent(emit, event)
 	}, func(event Event) error {
-		if err := s.recordCollaboration(runID, event); err != nil {
+		if err := s.recordState(runID, event); err != nil {
 			cancel()
 			return err
 		}
@@ -154,6 +177,10 @@ func (s *Session) Restore(agent *Agent) error {
 	}
 	agent.messages = cloneMessages(s.messages)
 	agent.collaboration = cloneCollaboration(s.collaboration)
+	agent.contextLimitTokens = 0
+	if agent.model == s.contextLimitModel {
+		agent.contextLimitTokens = s.contextLimitTokens
+	}
 	return nil
 }
 
@@ -232,6 +259,15 @@ func (s *Session) write(runID, kind string, payload any) error {
 			return err
 		}
 	}
+	if EventType(kind) == EventContextCompacted {
+		event, ok := payload.(Event)
+		if !ok || event.Type != EventContextCompacted || event.Compaction == nil {
+			return errors.New("invalid compaction event")
+		}
+		if err := validateCompaction(*event.Compaction); err != nil {
+			return err
+		}
+	}
 	var raw json.RawMessage
 	var err error
 	if payload != nil {
@@ -262,6 +298,10 @@ func (s *Session) write(runID, kind string, payload any) error {
 		s.messages = nil
 		s.collaboration.Plan = nil
 		s.collaboration.Progress = nil
+	} else if event, ok := payload.(Event); ok && event.Type == EventContextCompacted {
+		s.messages = cloneMessages(event.Compaction.Context.Messages)
+		s.contextLimitTokens = event.Compaction.ContextLimitTokens
+		s.contextLimitModel = event.Compaction.Context.Model
 	} else if event, ok := payload.(Event); ok && isCollaborationEvent(event.Type) {
 		s.collaboration = cloneCollaboration(*event.Collaboration)
 	} else if event, ok := payload.(Event); ok && event.Type == EventMessageAdded && event.Message != nil {
@@ -270,9 +310,77 @@ func (s *Session) write(runID, kind string, payload any) error {
 	return nil
 }
 
-// recordCollaboration synchronizes a state checkpoint before a later operation can use it.
-func (s *Session) recordCollaboration(runID string, event Event) error {
+// Compact persists the replacement context before publishing it to an idle Agent.
+// nil Session compacts in memory. A failed or canceled summary leaves history intact.
+func (s *Session) Compact(ctx context.Context, agent *Agent, instructions string, emit EmitFunc) (CompactionState, error) {
+	if s == nil {
+		return agent.Compact(ctx, instructions, emit)
+	}
+	if !s.operation.TryLock() {
+		return CompactionState{}, ErrBusy
+	}
+	defer s.operation.Unlock()
+	s.mu.Lock()
+	err := s.checkOpen()
+	messages := cloneMessages(s.messages)
+	state := cloneCollaboration(s.collaboration)
+	newSession := s.seq == 1
+	s.mu.Unlock()
+	if err != nil {
+		return CompactionState{}, err
+	}
+	if !reflect.DeepEqual(agent.Messages(), messages) || (!newSession && !reflect.DeepEqual(agent.Collaboration(), state)) {
+		return CompactionState{}, errors.New("agent state differs from session; call Session.Restore first")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	result, compactErr := agent.compactIdle(ctx, instructions, func(event Event) {
+		if event.Type != EventContextCompacted {
+			if err := s.write("", string(event.Type), event); err != nil {
+				cancel()
+			}
+		}
+		emitEvent(emit, event)
+	}, func(event Event) error { return s.recordState("", event) })
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err == nil {
+		s.err = s.file.Sync()
+	}
+	return result, errors.Join(compactErr, s.err)
+}
+
+// recordState synchronizes a checkpoint before a later operation can use it.
+func (s *Session) recordState(runID string, event Event) error {
+	var snapshot string
+	if event.Type == EventContextCompacted {
+		if event.Compaction == nil {
+			return errors.New("compaction state is missing")
+		}
+		if err := validateCompaction(*event.Compaction); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		sequence := s.seq + 1
+		dir := s.summaryDir
+		s.mu.Unlock()
+		if dir == "" {
+			dir = filepath.Dir(s.path)
+		}
+		event.Compaction.EventID = sequence
+		if event.Compaction.Stage == "summary" {
+			var err error
+			snapshot, err = writeSummarySnapshot(dir, s.path, s.id, runID, sequence, *event.Compaction)
+			if err != nil {
+				return err
+			}
+			event.Compaction.SummaryPath = snapshot
+		}
+	}
 	if err := s.write(runID, string(event.Type), event); err != nil {
+		if snapshot != "" {
+			return errors.Join(err, os.Remove(snapshot))
+		}
 		return err
 	}
 	s.mu.Lock()
@@ -296,7 +404,7 @@ func (s *Session) SetMode(agent *Agent, mode Mode, emit EmitFunc) error {
 	if err != nil {
 		return err
 	}
-	return agent.setMode(mode, emit, func(event Event) error { return s.recordCollaboration("", event) })
+	return agent.setMode(mode, emit, func(event Event) error { return s.recordState("", event) })
 }
 
 // ApprovePlan records the exact file content the user approved and leaves plan mode.
@@ -314,7 +422,7 @@ func (s *Session) ApprovePlan(agent *Agent, emit EmitFunc) (SavedPlan, error) {
 	if err != nil {
 		return SavedPlan{}, err
 	}
-	return agent.approvePlan(emit, func(event Event) error { return s.recordCollaboration("", event) })
+	return agent.approvePlan(emit, func(event Event) error { return s.recordState("", event) })
 }
 
 // newUUID 为会话与每次运行生成随机 v4 UUID。

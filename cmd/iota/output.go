@@ -63,17 +63,34 @@ type eventOutput struct {
 }
 
 func (o *eventOutput) emit(event iota.Event) {
-	if o.reasoningOpen && (event.Type == iota.EventTextDelta || event.Type == iota.EventToolCallDelta || event.Type == iota.EventModelResponse || event.Type == iota.EventRunEnd) {
+	if o.reasoningOpen && (event.Type == iota.EventTextDelta || event.Type == iota.EventToolCallDelta || event.Type == iota.EventModelResponse || event.Type == iota.EventRunEnd || event.Type == iota.EventCompactionStart) {
 		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "\n[/thinking]"))
 		o.reasoningOpen = false
 	}
-	if o.assistantOpen && (event.Type == iota.EventReasoningDelta || event.Type == iota.EventToolCallDelta || event.Type == iota.EventToolStart || event.Type == iota.EventModelResponse || event.Type == iota.EventRunEnd) {
+	if o.assistantOpen && (event.Type == iota.EventReasoningDelta || event.Type == iota.EventToolCallDelta || event.Type == iota.EventToolStart || event.Type == iota.EventModelResponse || event.Type == iota.EventRunEnd || event.Type == iota.EventCompactionStart) {
 		if !o.assistantEnded {
 			fmt.Fprintln(o.stdout)
 		}
 		o.assistantOpen = false
 	}
 	switch event.Type {
+	case iota.EventCompactionStart:
+		message := "compacting context (" + event.Reason + ")"
+		if state := event.Compaction; state != nil {
+			message += ": current " + formatContextUsage(state.BeforeUsage, state.ContextLimitTokens)
+		}
+		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, message))
+	case iota.EventCompactionEnd:
+		if event.IsError {
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorError, "compaction failed: "+event.Error))
+		} else if state := event.Compaction; state != nil {
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("context compacted (%s): %d → %d characters; kept %d recent turns", state.Stage, state.BeforeChars, state.AfterChars, state.KeptTurns)))
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "context before: "+formatContextUsage(state.BeforeUsage, state.ContextLimitTokens)))
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "context after: "+formatContextUsage(state.AfterUsage, state.ContextLimitTokens)))
+			if state.SummaryPath != "" {
+				fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "summary: "+state.SummaryPath))
+			}
+		}
 	case iota.EventModeChanged:
 		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "mode: "+string(event.Collaboration.Mode)))
 	case iota.EventPlanSaved:
@@ -115,4 +132,23 @@ func (o *eventOutput) emit(event iota.Event) {
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorError, fmt.Sprintf("[%s error] %s", event.ToolCall.Name, event.ToolResult)))
 		}
 	}
+}
+
+func formatContextUsage(usage iota.ContextUsage, limit int) string {
+	if usage.Tokens <= 0 {
+		return "size unavailable; available percentage unknown"
+	}
+	label := fmt.Sprintf("%d tokens", usage.Tokens)
+	if usage.Estimated {
+		label = "approximately " + label
+	}
+	if limit > 0 {
+		label += fmt.Sprintf(" / %d capacity", limit)
+	}
+	if usage.RemainingPercent != nil {
+		label += fmt.Sprintf("; approximately %.1f%% available", *usage.RemainingPercent)
+	} else {
+		label += "; available percentage unknown (capacity unavailable)"
+	}
+	return label
 }

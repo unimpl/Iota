@@ -2,6 +2,7 @@ package iota
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -25,6 +26,11 @@ type Config struct {
 	PlansDir string
 	// PlanTemplatePath is an optional editable resource; empty uses the packaged default.
 	PlanTemplatePath string
+	// KeepRecentTurns protects complete user turns during compaction; zero uses the default.
+	KeepRecentTurns int
+	// SystemPromptLoader reloads authoritative instructions before every request.
+	// The CLI uses it for AGENTS.md; SDK callers can also inject skills here.
+	SystemPromptLoader func(context.Context) (string, error)
 }
 
 // New 校验配置并预编译所有工具 schema，让无效工具在运行前失败。
@@ -40,6 +46,12 @@ func New(config Config) (*Agent, error) {
 	}
 	if config.MaxTurns == 0 {
 		config.MaxTurns = DefaultMaxTurns
+	}
+	if config.KeepRecentTurns < 0 {
+		return nil, errors.New("keep recent turns cannot be negative")
+	}
+	if config.KeepRecentTurns == 0 {
+		config.KeepRecentTurns = DefaultKeepRecentTurns
 	}
 	if config.Mode == "" {
 		config.Mode = ModeDefault
@@ -101,13 +113,15 @@ func New(config Config) (*Agent, error) {
 	}
 
 	return &Agent{
-		provider:         config.Provider,
-		model:            config.Model,
-		systemPrompt:     config.SystemPrompt,
-		tools:            compiled,
-		maxTurns:         config.MaxTurns,
-		plansDir:         config.PlansDir,
-		planTemplatePath: config.PlanTemplatePath,
-		collaboration:    CollaborationState{Mode: config.Mode},
+		provider:           config.Provider,
+		model:              config.Model,
+		systemPrompt:       config.SystemPrompt,
+		tools:              compiled,
+		maxTurns:           config.MaxTurns,
+		plansDir:           config.PlansDir,
+		planTemplatePath:   config.PlanTemplatePath,
+		keepRecentTurns:    config.KeepRecentTurns,
+		systemPromptLoader: config.SystemPromptLoader,
+		collaboration:      CollaborationState{Mode: config.Mode},
 	}, nil
 }

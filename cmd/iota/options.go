@@ -28,6 +28,7 @@ type options struct {
 	resumeRequested bool
 	mode            string
 	modeRequested   bool
+	keepRecentTurns int
 }
 
 // parseOptions 加载本地配置，再交给可注入依赖的解析函数处理覆盖关系。

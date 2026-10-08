@@ -2,7 +2,7 @@
 
 iota 是一个精简的 Go Agent SDK，以及使用该 SDK 构建的普通命令行编程助手。它保留 Agent 的必要闭环：请求模型、校验并执行工具、把工具结果交回模型，再得到最终回答。
 
-项目只支持 OpenAI 兼容 Chat Completions 协议。SDK 默认在内存中保存对话，也提供可选的 JSONL 会话保存和恢复。CLI 使用同一套会话能力，记录可供查看器观察。项目不包含 TUI、自动压缩、插件、MCP 或多 Agent。
+项目只支持 OpenAI 兼容 Chat Completions 协议。SDK 默认在内存中保存对话，也提供可选的 JSONL 会话保存和恢复。CLI 使用同一套会话能力，记录可供查看器观察。支持手动上下文压缩和上下文超限后的自动恢复；不包含 TUI、插件、MCP 或多 Agent。
 
 ## 安装与 CLI
 
@@ -34,13 +34,36 @@ mode = "default" # plan 表示先探索和编写计划
 max_turns = 20
 timeout = "2m"
 save_session = true # false 表示只保留内存对话
+compaction_keep_recent_turns = 3 # 压缩时保留最近几轮完整原文
 ```
 
 `api_key` 支持 `$NAME` 和 `${NAME}` 形式的环境变量引用；变量不存在时会报错。`OPENAI_API_KEY` 仍可直接覆盖它。其他可用环境变量为 `IOTA_MODEL`、`OPENAI_BASE_URL`、`IOTA_CWD`、`IOTA_SYSTEM`、`IOTA_TOOLS`、`IOTA_MAX_TURNS`、`IOTA_TIMEOUT`、`IOTA_SAVE_SESSION`、`IOTA_RESUME` 和 `IOTA_MODE`。`IOTA_TOOLS=none` 禁用全部工具，包括计划工具。未知 TOML 字段、非法时长、模式和非正数轮数会作为配置错误退出。
 
-CLI 支持 `~/.iota/SYSTEM.md` 和工作目录中的 `.iota/SYSTEM.md`：找到的文件替换内置系统提示。`APPEND_SYSTEM.md` 放在对应的 `.iota` 目录中，用于追加提示。两种文件分别查找，均以工作目录为先、用户目录为后；工作目录的空 `SYSTEM.md` 会使用内置提示，不再查找用户目录的同名文件。`--system`、配置文件中的 `system` 和 `IOTA_SYSTEM` 仍作为额外提示，位于 `APPEND_SYSTEM.md` 之前。工作目录根部的 `AGENTS.md` 最后加入。读取已存在的提示文件失败时，CLI 会报错退出。
+CLI 支持 `~/.iota/SYSTEM.md` 和工作目录中的 `.iota/SYSTEM.md`：找到的文件替换内置系统提示。`APPEND_SYSTEM.md` 放在对应的 `.iota` 目录中，用于追加提示。两种文件分别查找，均以工作目录为先、用户目录为后；工作目录的空 `SYSTEM.md` 会使用内置提示，不再查找用户目录的同名文件。`--system`、配置文件中的 `system` 和 `IOTA_SYSTEM` 仍作为额外提示，位于 `APPEND_SYSTEM.md` 之前。工作目录根部的 `AGENTS.md` 最后加入。启动和每次正常模型请求都会读取这些文件，压缩后仍重新注入当前规则。读取已存在的提示文件失败会报错。
 
-交互模式逐行接收任务，支持 `/reset`、`/exit` 和下述规划命令。模型文本写入 stdout，推理、提示符、工具状态和错误写入 stderr。
+交互模式逐行接收任务，支持 `/reset`、`/compact [摘要重点]`、`/exit` 和下述规划命令。模型文本写入 stdout，推理、提示符、工具状态和错误写入 stderr。
+
+### 上下文压缩
+
+`/compact` 先裁剪旧工具结果，保留其首尾各 1000 个字符及裁剪标记。最近 N 轮保持完整原文：一轮指用户请求和它后面的所有助手回复、工具调用与结果，直到下一条用户请求。`compaction_keep_recent_turns` 默认是 3，配置文件可以省略该项，显式值必须为正整数；没有对应环境变量或命令行参数。
+
+手动压缩时，若裁剪让整个请求的字符数至少减少 20%，直接使用裁剪后的历史；否则调用当前模型，将更老的对话总结成检查点。`/compact 保留文件路径、关键决策和未完成事项` 会生成指定重点的摘要。已有摘要参与下一次摘要更新。摘要提示参考 Codex 的 `compact/prompt.md`，摘要请求不提供工具，正文不写入普通助手输出。
+
+连续手动调用 `/compact` 时，若保护范围外只剩已有摘要，且没有新的摘要重点，会提示无需再次压缩，不调用模型，也不生成重复文件。带新重点或出现新的旧历史时可以生成新的检查点。
+
+正常请求遇到明确的上下文超限错误时，先裁剪旧工具结果并重试；重试仍超限则生成旧历史摘要并再次重试。每个模型轮次最多进行一次工具裁剪和一次摘要恢复，不会无限重试。服务端错误给出明确容量数字时，会将它记录为上下文上限；没有数字时保持未知，不从 usage 推测容量，也不依赖预置模型目录。速率限制、网络错误和一般输出截断不触发容量恢复。
+
+压缩不改变 plan/default 模式、计划批准状态或工具权限。系统规则、规划模板、当前计划正文和执行进度在正常请求中独立注入，不依赖摘要记住它们。SDK 可以使用 `Config.SystemPromptLoader` 动态注入项目规则或未来的 skills 指令；SDK 自身不自动发现这些文件。
+
+压缩结果作为 `context_compacted` 检查点追加到 JSONL，原始事件不删除；恢复时替换有效消息历史，避免重新带回已压缩的旧内容。查看器顶部展示当前有效上下文、历史摘要和已知容量，时间线标出裁剪或摘要、前后字符数、保留轮数及摘要重点，并可展开检查点中的系统提示、消息和工具。字符统计是序列化请求的大小，不是精确 token 用量。
+
+启用会话保存时，每次成功生成并应用 LLM 摘要，CLI 额外创建 `~/.iota/sessions/<session文件名去掉.jsonl>.summary.<event-id>.md`，其中 `event-id` 是对应 `context_compacted` 事件的 `seq`，不是 run ID。文件包含来源会话、检查点、触发方式、生成时间、摘要重点和正文，权限为 `0600`；已有快照不覆盖。只裁剪工具结果、失败、取消或没有缩小上下文时不生成摘要文件。`--no-session` 不生成这些快照。JSONL 是恢复依据，Markdown 是阅读用的派生文件；删除 Markdown 不影响会话恢复。
+
+手动和自动压缩开始、完成时，stderr 都输出当前及压缩后的估算 token 用量，并在容量已知时输出剩余可用百分比。估算包含系统提示、消息和工具定义，按 ASCII 约四字符一 token、非 ASCII 约一字符一 token 计算，不保证请求能够放进窗口。剩余百分比是 `max(0, 1 - 估算用量 / 服务端报告上限) × 100%`；上限未知时明确显示未知。压缩判断和超限恢复仍由原策略决定，不使用这些显示估算触发压缩。
+
+查看器展示快照地址、“打开摘要 Markdown”和按需加载的文件预览，并显示压缩检查点的前后 token 用量、容量和余量；后续新增消息可能增加当前用量。文件缺失时仍可查看 JSONL 内的摘要。预览只读取选中会话对应的快照，同一会话内复用已加载的内容，不预先加载所有会话的 Markdown。
+
+摘要错误、取消、空内容、输出截断或工具调用不会替换历史。如果最近 N 轮或系统规则自身已过大，压缩不能解决超限；需要减少保护轮数、缩短输入或使用 `/reset`。`/reset` 清空历史，`/compact` 保留近期原文和旧历史摘要。
 
 ### 规划与执行
 
@@ -152,6 +175,10 @@ SDK 默认使用程序中打包的规划模板，不自动读取项目文件。�
 
 `agent.Collaboration()` 返回模式、计划及进度的独立副本。无会话保存时用 `agent.SetMode(mode, emit)` 切换模式，`agent.ApprovePlan(emit)` 批准计划；启用保存时对应调用 `session.SetMode(agent, mode, emit)` 和 `session.ApprovePlan(agent, emit)`。批准 API 只读取计划并切换模式，不自动运行模型；调用方随后用 `session.Run` 提交执行请求。
 
+`Config.KeepRecentTurns` 设置压缩保护轮数，零值使用 `iota.DefaultKeepRecentTurns`（3）。无持久化时调用 `agent.Compact(ctx, instructions, emit)`；保存会话时调用 `session.Compact(ctx, agent, instructions, emit)`。这两个 API 在空闲时使用，返回包含完整有效上下文和前后大小的 `CompactionState`。`Message.ContextSummary` 标记摘要消息，它不计为用户请求。自动恢复由 `Run` 内部处理。
+
+SDK 的 `Session` 默认在会话文件所在目录保存 Markdown 快照；`session.SetSummaryDir(dir)` 可以显式指定目录。CLI 使用该接口固定为用户的 `~/.iota/sessions`，包括从其他目录恢复会话的情况。`CompactionState.EventID`、`SummaryPath`、`BeforeUsage` 和 `AfterUsage` 提供快照及用量信息。
+
 `Run` 同步等待一次完整运行，同一个 Agent 不允许并发运行。工具调用只在完整模型响应返回后执行；未知工具、参数错误和工具失败会作为 tool result 交回模型。模型请求错误、响应异常结束、输出截断、取消或达到轮数上限会停止运行。
 
 SDK 的事件回调同步发送，包含完整消息、每轮模型请求、文本增量、模型响应元信息、工具开始与结束，以及运行终态。
@@ -219,6 +246,8 @@ flowchart LR
 | `config.go` | Agent 配置、默认轮数和 `New` 初始化 |
 | `tool.go` | 工具调用校验、参数校验与执行，以及工具 schema 的引用检查 |
 | `messages.go` | 读取和清空历史，以及消息与工具调用的独立副本 |
+| `compaction.go`、`context_overflow.go`、`model_request.go` | 分阶段压缩、超限错误识别、摘要及模型请求 |
+| `context_usage.go`、`summary_snapshot.go` | 上下文用量估算和按检查点保存的 Markdown 摘要快照 |
 | `collaboration.go`、`plan_file.go` | 内置协作模式、计划工具、文件保存与计划批准 |
 | `plan_template.go`、`iota/plans/template.md` | 默认规划流程、选项与自定义回答指引、模板读取与初始化 |
 | `session.go` | 可选会话保存、运行、重置和关闭 |
@@ -230,6 +259,7 @@ flowchart LR
 go test ./...
 go test -race ./...
 go vet ./...
+node --test cmd/iota-view/*.test.mjs
 ```
 
 测试只使用假 Provider 和本地 HTTP 服务，不请求真实模型。

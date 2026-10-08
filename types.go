@@ -30,6 +30,8 @@ type Message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	ToolName   string     `json:"tool_name,omitempty"`
 	IsError    bool       `json:"is_error,omitempty"`
+	// ContextSummary marks a checkpoint, not a new user turn.
+	ContextSummary bool `json:"context_summary,omitempty"`
 }
 
 // ToolDefinition 是发送给模型的工具元数据；Schema 用 JSON Schema 约束参数。
@@ -108,24 +110,30 @@ type EventType string
 
 // 事件顺序用于还原一次运行；流结束标记与一轮回复完成是不同事件。
 const (
-	EventRunStart       EventType = "run_start"
-	EventTurnStart      EventType = "turn_start"
-	EventMessageAdded   EventType = "message_added"
-	EventModelRequest   EventType = "model_request"
-	EventModelResponse  EventType = "model_response"
-	EventStreamOther    EventType = "model_stream_other"
-	EventStreamFinish   EventType = "model_stream_finish"
-	EventStreamDone     EventType = "model_stream_done"
-	EventTextDelta      EventType = "text_delta"
-	EventReasoningDelta EventType = "reasoning_delta"
-	EventToolCallDelta  EventType = "tool_call_delta"
-	EventToolStart      EventType = "tool_start"
-	EventToolEnd        EventType = "tool_end"
-	EventRunEnd         EventType = "run_end"
-	EventModeChanged    EventType = "mode_changed"
-	EventPlanSaved      EventType = "plan_saved"
-	EventPlanUpdated    EventType = "plan_updated"
-	EventPlanApproved   EventType = "plan_approved"
+	EventRunStart          EventType = "run_start"
+	EventTurnStart         EventType = "turn_start"
+	EventMessageAdded      EventType = "message_added"
+	EventModelRequest      EventType = "model_request"
+	EventModelResponse     EventType = "model_response"
+	EventModelError        EventType = "model_error"
+	EventStreamOther       EventType = "model_stream_other"
+	EventStreamFinish      EventType = "model_stream_finish"
+	EventStreamDone        EventType = "model_stream_done"
+	EventTextDelta         EventType = "text_delta"
+	EventReasoningDelta    EventType = "reasoning_delta"
+	EventToolCallDelta     EventType = "tool_call_delta"
+	EventToolStart         EventType = "tool_start"
+	EventToolEnd           EventType = "tool_end"
+	EventRunEnd            EventType = "run_end"
+	EventModeChanged       EventType = "mode_changed"
+	EventPlanSaved         EventType = "plan_saved"
+	EventPlanUpdated       EventType = "plan_updated"
+	EventPlanApproved      EventType = "plan_approved"
+	EventCompactionStart   EventType = "compaction_start"
+	EventCompactionRequest EventType = "compaction_request"
+	EventCompactionDelta   EventType = "compaction_delta"
+	EventCompactionEnd     EventType = "compaction_end"
+	EventContextCompacted  EventType = "context_compacted"
 )
 
 // Event 是观察和会话日志的统一记录；字段按 Type 选择性填充。
@@ -146,6 +154,7 @@ type Event struct {
 	Reason        string              `json:"reason,omitempty"`
 	Error         string              `json:"error,omitempty"`
 	Collaboration *CollaborationState `json:"collaboration,omitempty"`
+	Compaction    *CompactionState    `json:"compaction,omitempty"`
 }
 
 // EmitFunc 接收同步发出的事件；回调应尽快返回，避免阻塞执行循环。

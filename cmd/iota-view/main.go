@@ -94,6 +94,7 @@ func newHandler(folder string) http.Handler {
 	mux := http.NewServeMux()
 	static, _ := fs.Sub(webFiles, "web")
 	mux.Handle("GET /", http.FileServer(http.FS(static)))
+	mux.HandleFunc("GET /api/summary", summaryHandler(folder))
 	// 自定义请求头阻止其他网站通过跨域请求删除本地记录。
 	mux.HandleFunc("DELETE /api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Iota-Delete") != "1" ||

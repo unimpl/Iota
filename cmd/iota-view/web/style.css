@@ -60,6 +60,22 @@ summary { width:max-content; max-width:100%; color:var(--green); font-size:12px;
 summary:hover { text-decoration:underline; text-underline-offset:3px; }
 pre { margin:10px 0 0; padding:14px; max-height:480px; overflow:auto; border-radius:7px; background:#f3f5f1; color:#344139; white-space:pre-wrap; overflow-wrap:anywhere; font:11px/1.6 var(--mono); tab-size:2; }
 .empty { padding:50px 0; color:var(--muted); line-height:1.6; }
+.context-state { margin-top:28px; padding:20px 0; border-bottom:1px solid var(--line); }
+.context-state h2 { margin:0 0 8px; font-size:19px; }
+.context-state h3 { margin:20px 0 8px; font-size:14px; }
+.context-status { margin:0 0 12px; line-height:1.6; }
+.context-facts { display:flex; flex-wrap:wrap; gap:6px 18px; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+.context-summary { max-height:240px; font-size:12px; }
+.context-note { margin:12px 0 0; color:var(--muted); font-size:12px; line-height:1.6; }
+.context-usage { margin:12px 0 0; font-size:13px; line-height:1.6; font-variant-numeric:tabular-nums; }
+.summary-file { margin-top:16px; }
+.summary-path { margin:0 0 8px; color:var(--muted); font:12px/1.6 var(--mono); overflow-wrap:anywhere; }
+.summary-link { color:var(--green); font-size:12px; text-underline-offset:3px; }
+.summary-link:focus-visible { outline:2px solid var(--green); outline-offset:3px; }
+.error-text { color:var(--red); overflow-wrap:anywhere; }
+.event-context_compacted { margin:16px 0; }
+.event-context_compacted .event-content { background:var(--green-bg); border-color:var(--mode-line); }
+.event-context_compacted .event-badge { background:var(--green); color:var(--white); }
 /* 小屏幕将侧栏改为覆盖层，切换时不挤压时间线。 */
 @media (max-width:700px) { .sidebar { position:fixed; z-index:10; left:0; top:64px; height:calc(100vh - 64px); width:min(82vw,300px); box-shadow:10px 10px 30px rgba(35,52,39,.1); } .shell.sidebar-hidden .sidebar { transform:translateX(-105%); width:min(82vw,300px); } .topbar { padding:0 16px; } .content { padding:30px 19px 80px; } }
 .filename { font:12px var(--mono); }

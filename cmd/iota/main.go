@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -74,6 +75,13 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		Mode:             iota.Mode(opts.mode),
 		PlansDir:         plansDir,
 		PlanTemplatePath: filepath.Join(plansDir, "template.md"),
+		KeepRecentTurns:  opts.keepRecentTurns,
+		SystemPromptLoader: func(ctx context.Context) (string, error) {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return loadSystemPrompt(absCWD, opts.system)
+		},
 	})
 	if err != nil {
 		printLine(stderr, colorError, "iota: "+err.Error())
@@ -107,6 +115,10 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		}()
 		if err := session.Restore(agent); err != nil {
 			printLine(stderr, colorError, "iota: restore session: "+err.Error())
+			return 1
+		}
+		if err := session.SetSummaryDir(filepath.Join(home, ".iota", "sessions")); err != nil {
+			printLine(stderr, colorError, "iota: configure summary directory: "+err.Error())
 			return 1
 		}
 		printLine(stderr, colorThinking, "session: "+session.Path())

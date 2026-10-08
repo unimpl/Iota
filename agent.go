@@ -2,7 +2,6 @@ package iota
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -21,13 +20,16 @@ var (
 // Agent 持有对话历史和工具定义；同一实例一次只能执行一个 Run。
 // mu 保护运行状态和消息，避免外部读取与执行并发时发生数据竞争。
 type Agent struct {
-	provider         Provider
-	model            string
-	systemPrompt     string
-	tools            []compiledTool
-	maxTurns         int
-	plansDir         string
-	planTemplatePath string
+	provider           Provider
+	model              string
+	systemPrompt       string
+	tools              []compiledTool
+	maxTurns           int
+	plansDir           string
+	planTemplatePath   string
+	keepRecentTurns    int
+	systemPromptLoader func(context.Context) (string, error)
+	contextLimitTokens int
 
 	mu            sync.Mutex
 	running       bool
@@ -51,8 +53,15 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 	a.running = true
 	userMessage := Message{Role: RoleUser, Content: prompt}
 	a.messages = append(a.messages, userMessage)
-	start := len(a.messages) - 1
 	a.mu.Unlock()
+	var runMessages []Message
+	observer := emit
+	emit = func(event Event) {
+		if event.Type == EventMessageAdded && event.Message != nil {
+			runMessages = append(runMessages, *cloneMessagePointer(*event.Message))
+		}
+		emitEvent(observer, event)
+	}
 
 	reason := "error"
 	emitEvent(emit, Event{Type: EventRunStart})
@@ -60,7 +69,7 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 	// 无论正常结束还是中途报错，都释放运行锁并发出结束事件。
 	defer func() {
 		a.mu.Lock()
-		result.Messages = cloneMessages(a.messages[start:])
+		result.Messages = cloneMessages(runMessages)
 		a.running = false
 		a.mu.Unlock()
 		if runErr == nil && result.StopReason != "" {
@@ -81,57 +90,7 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 			return result, err
 		}
 		emitEvent(emit, Event{Type: EventTurnStart, Turn: turn})
-		systemPrompt, err := a.collaborationPrompt(ctx)
-		if err != nil {
-			return result, err
-		}
-		request := Request{
-			Mode:         a.Mode(),
-			Model:        a.model,
-			SystemPrompt: systemPrompt,
-			Messages:     a.Messages(),
-			Tools:        a.activeToolDefinitions(),
-		}
-		// 事件记录使用独立副本，避免观察者意外改动实际发送的请求。
-		requestEvent := request
-		requestEvent.Messages = cloneMessages(request.Messages)
-		requestEvent.Tools = append([]ToolDefinition(nil), request.Tools...)
-		for i := range requestEvent.Tools {
-			requestEvent.Tools[i].Schema = append(json.RawMessage(nil), request.Tools[i].Schema...)
-		}
-		requestRecord := Event{Type: EventModelRequest, Turn: turn, Request: &requestEvent}
-		if encoder, ok := a.provider.(RequestEncoder); ok {
-			body, err := encoder.EncodeRequest(request)
-			if err != nil {
-				return result, err
-			}
-			requestRecord.RawRequest = string(body)
-		}
-		emitEvent(emit, requestRecord)
-		if err := ctx.Err(); err != nil {
-			return result, err
-		}
-		response, err := a.provider.Stream(ctx, request, func(delta Delta) {
-			if delta.Reasoning != "" {
-				emitEvent(emit, Event{Type: EventReasoningDelta, Turn: turn, Reasoning: delta.Reasoning, RawChunk: delta.RawChunk})
-			}
-			if delta.Text != "" {
-				emitEvent(emit, Event{Type: EventTextDelta, Turn: turn, Text: delta.Text, RawChunk: delta.RawChunk})
-			}
-			if delta.ToolCall != nil {
-				call := *delta.ToolCall
-				emitEvent(emit, Event{Type: EventToolCallDelta, Turn: turn, ToolCallDelta: &call, RawChunk: delta.RawChunk})
-			}
-			if delta.FinishReason != "" {
-				emitEvent(emit, Event{Type: EventStreamFinish, Turn: turn, Reason: delta.FinishReason, Usage: delta.Usage, RawChunk: delta.RawChunk})
-			}
-			if delta.StreamDone {
-				emitEvent(emit, Event{Type: EventStreamDone, Turn: turn, RawChunk: delta.RawChunk})
-			}
-			if delta.RawChunk != "" && delta.Reasoning == "" && delta.Text == "" && delta.ToolCall == nil && delta.FinishReason == "" && !delta.StreamDone {
-				emitEvent(emit, Event{Type: EventStreamOther, Turn: turn, RawChunk: delta.RawChunk})
-			}
-		})
+		response, err := a.requestWithCompaction(ctx, turn, emit, record)
 		if err != nil {
 			return result, err
 		}
