@@ -61,13 +61,19 @@ flowchart TD
 
 两类失败的处理不同：缺失或重复调用 ID、无效 JSON、流异常和输出截断会终止运行；未知工具、参数不符合 schema、执行函数报错则成为 `IsError=true` 的工具消息，下一轮模型可以修正调用。工具自身的超时也按执行错误处理；运行上下文取消时停止后续调用，并补齐尚未执行的工具结果。
 
-协作模式由 [`collaboration.go`](../collaboration.go) 维护，每轮请求动态组装模式提示和工具声明。规划模式允许 `Tool.ReadOnly` 工具和 `save_plan`，默认模式允许普通工具和 `update_plan`；执行入口重复检查模式，未声明的越界调用也不会执行。`save_plan` 把完整 Markdown 原子写入调用方提供的目录，文件名由 Agent 生成；`update_plan` 保存执行清单。保存计划不退出规划模式。
+协作模式由 [`collaboration.go`](../collaboration.go) 维护，每轮请求动态组装模式提示和工具声明。规划模式允许 `Tool.ReadOnly` 工具和 `save_plan`，默认模式允许普通工具和 `update_progress`；执行入口重复检查模式，未声明的越界调用也不会执行。`save_plan` 把完整 Markdown 原子写入调用方提供的目录，文件名由 Agent 生成；`update_progress` 保存执行清单。保存计划不退出规划模式。
 
 模式切换不删除对话历史，因此旧助手回复和工具结果仍可能描述此前的规划状态。当前请求的模式指令是实时依据：默认模式显式说明旧规划限制已结束，保存计划仅供参考，最新用户消息决定当前任务，并注明 `/execute` 的有效条件；不能依靠清空历史来切换行为。
 
 规划指令由 [`iota/plans/template.md`](../iota/plans/template.md) 提供，通过 `go:embed` 随程序分发。SDK 未设置 `PlanTemplatePath` 时直接使用打包内容；CLI 将 `PlansDir` 和 `PlanTemplatePath` 分别设为 `~/.iota/plans` 与 `~/.iota/plans/template.md`。进入规划模式时检查并初始化模板，每次规划请求重新读取；缺失时发布完整的默认文件且不覆盖已有模板。读取失败会在调用 Provider 前终止。模板只引导澄清流程和文档结构，不取代工具权限检查；选项和自定义答案沿用正常消息与会话记录。
 
-启用 Session 时，计划工具通过内部的可返回错误的记录函数提交 `mode_changed`、`plan_saved`、`plan_approved`、`plan_updated` 快照，写入并同步 JSONL 后才更新 Agent 状态和通知观察者。文件写入失败不会提交状态；日志记录失败会取消运行，保存工具会尝试恢复之前的文件。普通 `EmitFunc` 仍然只负责通知，不成为扩展接口。
+启用 Session 时，计划工具通过内部的可返回错误的记录函数提交 `mode_changed`、`plan_saved`、`plan_approved`、`progress_updated` 快照，写入并同步 JSONL 后才更新 Agent 状态和通知观察者。文件写入失败不会提交状态；日志记录失败会取消运行，保存工具会尝试恢复之前的文件。普通 `EmitFunc` 仍然只负责通知，不成为扩展接口。
+
+`runtime_context.go` 将最新完整协作状态附加到请求消息末尾，标记为 `RuntimeContext`，不写进 `Agent.messages` 或 `message_added`。每个 run 的首轮默认模式请求额外附带意图判断和任务拆分提示；重试沿用同一轮阶段。system 保留模式、执行和历史查询规则，状态更新不改写长历史前缀。批准状态保存 plan ID 与正文 SHA-256，恢复不依赖模型从摘要猜测授权。
+
+消息通过同一个可返回错误的记录函数写入并同步后再加入 Agent 历史。Session 在写入时分配原始事件 seq、run ID 和活动步骤 ID，并维护只含原始语义消息的历史索引。压缩替换有效上下文，不删除该索引；`history.go` 的历史工具只访问绑定 Session，并分页限制返回字节数。
+
+`compaction_units.go` 将消息组织为完整工具批次，再优先按 run／步骤和输入预算分块。超限时可以压缩近期 run 内的旧批次；原子批次过大时生成有来源标记的首尾摘录，参数仍为有效 JSON。各块顺序更新同一份有总长度限制的摘要。检查点中的来源和分块元数据由程序生成，模型上下文中的来源区间有数量上限，完整元数据留在 JSONL。
 
 `Messages()` 返回完整历史的独立副本；`RunResult.Messages` 只包含本次运行新增的消息。再次调用 `Run` 会沿用已有历史。`Reset()` 清空历史，运行期间返回 `ErrBusy`。达到轮数上限时，最后一轮已返回的工具调用仍会执行，但不再请求下一轮模型。
 
@@ -230,7 +236,7 @@ OpenAI 兼容 Provider 将系统提示放在请求的 system 消息中，编码�
 
 会话文件每行是一条 `sessionRecord`，包含版本、递增序号、时间、session ID、可选 run ID、类型和载荷。`message_added` 同时更新 Session 的完整消息列表，其他流片段只作为过程记录。`NewSession` 写 `session_start`，`Reset` 写 `session_reset` 并清空两边历史，`Close` 写 `session_end`、同步并关闭文件。
 
-协作事件的 `collaboration` 载荷是完整快照：`mode`、可选的 `plan`（ID、路径、正文）和 `progress`（解释、步骤及状态）。运行中的计划事件使用该次 run ID，用户切换或批准的事件不启动模型运行。恢复严格校验这些快照，重放后替换两边协作状态。重置同时清空计划和进度，但保留模式和磁盘文件。
+协作事件的 `collaboration` 载荷是完整快照：`mode`、可选的 `plan`（ID、路径、正文）、`approval`（plan ID 与正文哈希）和 `progress`（清单 ID、版本、解释、稳定步骤 ID 及状态）。运行中的计划事件使用该次 run ID，用户切换或批准的事件不启动模型运行。恢复严格校验这些快照，重放后替换两边协作状态。重置同时清空计划、批准和进度，但保留模式和磁盘文件。
 
 ## 会话恢复
 

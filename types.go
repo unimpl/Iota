@@ -32,6 +32,25 @@ type Message struct {
 	IsError    bool       `json:"is_error,omitempty"`
 	// ContextSummary marks a checkpoint, not a new user turn.
 	ContextSummary bool `json:"context_summary,omitempty"`
+	// RuntimeContext exists only in a request, never in persisted conversation history.
+	RuntimeContext bool           `json:"runtime_context,omitempty"`
+	Source         *MessageSource `json:"source,omitempty"`
+	Sources        []SourceRange  `json:"sources,omitempty"`
+}
+
+// MessageSource points to an original message_added event in this session.
+type MessageSource struct {
+	Seq    uint64 `json:"seq"`
+	RunID  string `json:"run_id,omitempty"`
+	StepID string `json:"step_id,omitempty"`
+}
+
+// SourceRange is inclusive; history tools return semantic records inside it.
+type SourceRange struct {
+	StartSeq uint64 `json:"start_seq"`
+	EndSeq   uint64 `json:"end_seq"`
+	RunID    string `json:"run_id,omitempty"`
+	StepID   string `json:"step_id,omitempty"`
 }
 
 // ToolDefinition 是发送给模型的工具元数据；Schema 用 JSON Schema 约束参数。
@@ -48,8 +67,9 @@ type Tool struct {
 	Schema      json.RawMessage
 	Execute     func(context.Context, json.RawMessage) (string, error)
 	// ReadOnly allows this tool during planning; the caller owns this guarantee.
-	ReadOnly bool
-	planTool bool
+	ReadOnly    bool
+	planTool    bool
+	historyTool bool
 }
 
 // Request 汇集单轮模型请求；Messages 应保持对话和工具结果的原始顺序。
@@ -127,7 +147,7 @@ const (
 	EventRunEnd             EventType = "run_end"
 	EventModeChanged        EventType = "mode_changed"
 	EventPlanSaved          EventType = "plan_saved"
-	EventPlanUpdated        EventType = "plan_updated"
+	EventProgressUpdated    EventType = "progress_updated"
 	EventPlanApproved       EventType = "plan_approved"
 	EventCompactionStart    EventType = "compaction_start"
 	EventCompactionPrepared EventType = "compaction_prepared"

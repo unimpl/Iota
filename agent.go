@@ -35,6 +35,8 @@ type Agent struct {
 	running       bool
 	messages      []Message
 	collaboration CollaborationState
+	runTurn       int
+	history       *Session
 }
 
 // Run 执行一次用户输入，逐轮请求模型并按顺序执行工具，直到模型给出最终回复。
@@ -52,7 +54,6 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 	}
 	a.running = true
 	userMessage := Message{Role: RoleUser, Content: prompt}
-	a.messages = append(a.messages, userMessage)
 	a.mu.Unlock()
 	var runMessages []Message
 	observer := emit
@@ -65,12 +66,12 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 
 	reason := "error"
 	emitEvent(emit, Event{Type: EventRunStart})
-	emitEvent(emit, Event{Type: EventMessageAdded, Message: cloneMessagePointer(userMessage)})
 	// 无论正常结束还是中途报错，都释放运行锁并发出结束事件。
 	defer func() {
 		a.mu.Lock()
 		result.Messages = cloneMessages(runMessages)
 		a.running = false
+		a.runTurn = 0
 		a.mu.Unlock()
 		if runErr == nil && result.StopReason != "" {
 			reason = result.StopReason
@@ -83,6 +84,9 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 		}
 		emitEvent(emit, end)
 	}()
+	if err := a.appendMessage(userMessage, 0, emit, record); err != nil {
+		return result, err
+	}
 
 	for turn := 1; turn <= a.maxTurns; turn++ {
 		result.Turns = turn
@@ -90,6 +94,9 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 			return result, err
 		}
 		emitEvent(emit, Event{Type: EventTurnStart, Turn: turn})
+		a.mu.Lock()
+		a.runTurn = turn
+		a.mu.Unlock()
 		response, err := a.requestWithCompaction(ctx, turn, emit, record)
 		if err != nil {
 			return result, err
@@ -109,7 +116,9 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 		emitEvent(emit, responseEvent)
 
 		assistant := Message{Role: RoleAssistant, Content: response.Content, ToolCalls: cloneToolCalls(response.ToolCalls)}
-		a.appendMessage(assistant, turn, emit)
+		if err := a.appendMessage(assistant, turn, emit, record); err != nil {
+			return result, err
+		}
 		if len(response.ToolCalls) == 0 {
 			result.Text = response.Content
 			result.StopReason = response.StopReason
@@ -121,17 +130,17 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 
 		for index, call := range response.ToolCalls {
 			if err := ctx.Err(); err != nil {
-				a.appendCancelledResults(response.ToolCalls[index:], turn, emit)
-				return result, err
+				return result, errors.Join(err, a.appendCancelledResults(response.ToolCalls[index:], turn, emit, record))
 			}
 			emitEvent(emit, Event{Type: EventToolStart, Turn: turn, ToolCall: cloneToolCallPointer(call)})
 			text, isError := a.executeTool(ctx, call, turn, emit, record)
 			toolMessage := Message{Role: RoleTool, Content: text, ToolCallID: call.ID, ToolName: call.Name, IsError: isError}
-			a.appendMessage(toolMessage, turn, emit)
+			if err := a.appendMessage(toolMessage, turn, emit, record); err != nil {
+				return result, err
+			}
 			emitEvent(emit, Event{Type: EventToolEnd, Turn: turn, ToolCall: cloneToolCallPointer(call), ToolResult: text, IsError: isError})
 			if err := ctx.Err(); err != nil {
-				a.appendCancelledResults(response.ToolCalls[index+1:], turn, emit)
-				return result, err
+				return result, errors.Join(err, a.appendCancelledResults(response.ToolCalls[index+1:], turn, emit, record))
 			}
 		}
 	}
@@ -140,18 +149,28 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 }
 
 // appendMessage 同时更新对话历史和事件流，保证日志能还原模型看到的消息顺序。
-func (a *Agent) appendMessage(message Message, turn int, emit EmitFunc) {
+func (a *Agent) appendMessage(message Message, turn int, emit EmitFunc, record func(Event) error) error {
+	event := Event{Type: EventMessageAdded, Turn: turn, Message: cloneMessagePointer(message)}
+	if record != nil {
+		if err := record(event); err != nil {
+			return err
+		}
+	}
 	a.mu.Lock()
-	a.messages = append(a.messages, message)
+	a.messages = append(a.messages, *cloneMessagePointer(*event.Message))
 	a.mu.Unlock()
-	emitEvent(emit, Event{Type: EventMessageAdded, Turn: turn, Message: cloneMessagePointer(message)})
+	emitEvent(emit, event)
+	return nil
 }
 
 // appendCancelledResults 为尚未执行的调用补上取消结果，维持调用与工具消息一一对应。
-func (a *Agent) appendCancelledResults(calls []ToolCall, turn int, emit EmitFunc) {
+func (a *Agent) appendCancelledResults(calls []ToolCall, turn int, emit EmitFunc, record func(Event) error) error {
 	for _, call := range calls {
-		a.appendMessage(Message{Role: RoleTool, Content: "operation canceled before tool execution", ToolCallID: call.ID, ToolName: call.Name, IsError: true}, turn, emit)
+		if err := a.appendMessage(Message{Role: RoleTool, Content: "operation canceled before tool execution", ToolCallID: call.ID, ToolName: call.Name, IsError: true}, turn, emit, record); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // emitEvent 允许调用方不提供观察回调，不改变 Agent 的执行逻辑。

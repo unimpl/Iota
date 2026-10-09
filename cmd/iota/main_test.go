@@ -244,7 +244,7 @@ func TestRunOptionalSession(t *testing.T) {
 				if !strings.HasSuffix(stderr.String(), "To resume this conversation, run: iota --resume '"+sessionPath+"'\n") {
 					t.Fatalf("missing exit hint: %q", stderr.String())
 				}
-				if len(messages) != 4 || messages[1].Content != "first question" || messages[2].Content != "first answer" || messages[3].Content != "next question" {
+				if len(messages) != 5 || messages[1].Content != "first question" || messages[2].Content != "first answer" || messages[3].Content != "next question" || !strings.Contains(messages[4].Content, "<runtime-context>") {
 					t.Fatalf("messages=%+v", messages)
 				}
 			} else {

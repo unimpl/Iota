@@ -56,7 +56,7 @@ func TestInteractivePlanningAndExecution(t *testing.T) {
 			names = append(names, tool.Function.Name)
 		}
 		if requests <= 2 {
-			if !strings.Contains(body.Messages[0].Content, "Collaboration mode: plan") || strings.Join(names, ",") != "read,list,save_plan" {
+			if !strings.Contains(body.Messages[0].Content, "Collaboration mode: plan") || strings.Join(names, ",") != "read,list,save_plan,search_history,read_history" {
 				t.Errorf("plan tools=%v messages=%+v", names, body.Messages)
 			}
 		} else if !strings.Contains(body.Messages[0].Content, "Collaboration mode: default") || strings.Contains(strings.Join(names, ","), "save_plan") {
@@ -70,10 +70,10 @@ func TestInteractivePlanningAndExecution(t *testing.T) {
 			}
 			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"save\",\"type\":\"function\",\"function\":{\"name\":\"save_plan\",\"arguments\":%s}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n", arguments)
 		} else if requests == 3 {
-			if !strings.Contains(body.Messages[len(body.Messages)-1].Content, "Implement the approved plan") {
+			if !strings.Contains(body.Messages[len(body.Messages)-2].Content, "Implement the approved plan") {
 				t.Error("approved plan was not submitted")
 			}
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"progress\",\"type\":\"function\",\"function\":{\"name\":\"update_plan\",\"arguments\":\"{\\\"plan\\\":[{\\\"step\\\":\\\"Implement\\\",\\\"status\\\":\\\"completed\\\"}]}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"progress\",\"type\":\"function\",\"function\":{\"name\":\"update_progress\",\"arguments\":\"{\\\"plan\\\":[{\\\"step\\\":\\\"Implement\\\",\\\"status\\\":\\\"completed\\\"}]}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n")
 		} else {
 			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 		}
@@ -130,7 +130,7 @@ func TestInteractivePlanningAndExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"mode_changed", "plan_saved", "plan_approved", "plan_updated"} {
+	for _, kind := range []string{"mode_changed", "plan_saved", "plan_approved", "progress_updated"} {
 		if !strings.Contains(string(log), `"type":"`+kind+`"`) {
 			t.Fatalf("missing %s in session", kind)
 		}

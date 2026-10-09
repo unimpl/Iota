@@ -68,11 +68,15 @@ func (s *Session) read() error {
 		}
 		s.seq = record.Sequence
 		switch record.Type {
+		case "plan_updated":
+			return errors.New("legacy plan_updated event is unsupported; execution progress now uses progress_updated")
 		case "session_reset":
 			s.messages = nil
 			s.collaboration.Plan = nil
 			s.collaboration.Progress = nil
-		case string(EventModeChanged), string(EventPlanSaved), string(EventPlanUpdated), string(EventPlanApproved):
+			s.collaboration.Approval = nil
+			s.resetSeq = record.Sequence
+		case string(EventModeChanged), string(EventPlanSaved), string(EventProgressUpdated), string(EventPlanApproved):
 			var event Event
 			if err := json.Unmarshal(record.Payload, &event); err != nil || string(event.Type) != record.Type {
 				return fmt.Errorf("invalid collaboration event at record %d", s.seq)
@@ -86,7 +90,16 @@ func (s *Session) read() error {
 			if err := json.Unmarshal(record.Payload, &event); err != nil || event.Message == nil || event.Type != EventMessageAdded {
 				return fmt.Errorf("invalid message at record %d", s.seq)
 			}
-			s.messages = append(s.messages, *event.Message)
+			if event.Message.RuntimeContext {
+				return fmt.Errorf("runtime context persisted at record %d", s.seq)
+			}
+			stepID := activeStepID(s.collaboration)
+			if event.Message.Role == RoleUser {
+				stepID = ""
+			}
+			event.Message.Source = &MessageSource{Seq: record.Sequence, RunID: record.RunID, StepID: stepID}
+			s.messages = append(s.messages, *cloneMessagePointer(*event.Message))
+			s.history = append(s.history, *cloneMessagePointer(*event.Message))
 		case string(EventContextCompacted):
 			var event Event
 			if err := json.Unmarshal(record.Payload, &event); err != nil || event.Type != EventContextCompacted || event.Compaction == nil {

@@ -47,7 +47,7 @@ func planningCommand(line string, agent *iota.Agent, session *iota.Session, emit
 		if err != nil {
 			return true, "", err
 		}
-		return true, fmt.Sprintf("Implement the approved plan from %s. Complete the work and validation; maintain progress with update_plan when available.\n\n<approved-plan>\n%s\n</approved-plan>", plan.Path, plan.Content), nil
+		return true, fmt.Sprintf("Implement the approved plan from %s. Complete the work and validation; maintain progress with update_progress when available.\n\n<approved-plan>\n%s\n</approved-plan>", plan.Path, plan.Content), nil
 	default:
 		return false, "", nil
 	}

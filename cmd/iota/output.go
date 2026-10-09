@@ -131,7 +131,7 @@ func (o *eventOutput) emit(event iota.Event) {
 		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "plan saved: "+event.Collaboration.Plan.Path))
 	case iota.EventPlanApproved:
 		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "plan approved: "+event.Collaboration.Plan.Path))
-	case iota.EventPlanUpdated:
+	case iota.EventProgressUpdated:
 		for _, step := range event.Collaboration.Progress.Plan {
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "["+step.Status+"] "+step.Step))
 		}

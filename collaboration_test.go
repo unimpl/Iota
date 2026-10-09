@@ -24,12 +24,12 @@ func TestPlanWorkflowPersistsAndRestores(t *testing.T) {
 	provider := &fakeProvider{responses: []Response{
 		{ToolCalls: []ToolCall{
 			{ID: "write", Name: "write", Arguments: json.RawMessage(`{}`)},
-			{ID: "checklist-in-plan", Name: "update_plan", Arguments: progress},
+			{ID: "checklist-in-plan", Name: "update_progress", Arguments: progress},
 			{ID: "save", Name: "save_plan", Arguments: arguments},
 		}, StopReason: "tool_calls"},
 		{Content: "Plan ready for review.", StopReason: "stop"},
 		{ToolCalls: []ToolCall{
-			{ID: "checklist", Name: "update_plan", Arguments: progress},
+			{ID: "checklist", Name: "update_progress", Arguments: progress},
 			{ID: "save-in-default", Name: "save_plan", Arguments: arguments},
 		}, StopReason: "tool_calls"},
 		{Content: "Implementation done.", StopReason: "stop"},
@@ -38,7 +38,7 @@ func TestPlanWorkflowPersistsAndRestores(t *testing.T) {
 	tools := []Tool{
 		{Name: "read", ReadOnly: true, Schema: json.RawMessage(`{"type":"object"}`), Execute: func(context.Context, json.RawMessage) (string, error) { return "code", nil }},
 		{Name: "write", Schema: json.RawMessage(`{"type":"object"}`), Execute: func(context.Context, json.RawMessage) (string, error) { writes++; return "changed", nil }},
-		NewSavePlanTool(), NewUpdatePlanTool(),
+		NewSavePlanTool(), NewUpdateProgressTool(),
 	}
 	agent, err := New(Config{Provider: provider, Model: "test", SystemPrompt: "project rule", Tools: tools, PlansDir: dir})
 	if err != nil {
@@ -141,7 +141,7 @@ func TestPlanWorkflowPersistsAndRestores(t *testing.T) {
 			}
 		}
 	}
-	for _, kind := range []EventType{EventModeChanged, EventPlanSaved, EventPlanUpdated, EventPlanApproved} {
+	for _, kind := range []EventType{EventModeChanged, EventPlanSaved, EventProgressUpdated, EventPlanApproved} {
 		if counts[kind] != 1 {
 			t.Fatalf("%s recorded %d times", kind, counts[kind])
 		}
@@ -172,7 +172,7 @@ func TestPlanWorkflowPersistsAndRestores(t *testing.T) {
 	if _, err := resumed.Run(t.Context(), next, "continue", nil); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(nextProvider.requests[0].SystemPrompt, "Fix cache") {
+	if !strings.Contains(nextProvider.requests[0].Messages[len(nextProvider.requests[0].Messages)-1].Content, "Fix cache") {
 		t.Fatal("restored progress was not included in request")
 	}
 
@@ -260,10 +260,10 @@ func TestPlanProgressRejectsInvalidSteps(t *testing.T) {
 	} {
 		t.Run(arguments, func(t *testing.T) {
 			provider := &fakeProvider{responses: []Response{
-				{ToolCalls: []ToolCall{{ID: "update", Name: "update_plan", Arguments: json.RawMessage(arguments)}}},
+				{ToolCalls: []ToolCall{{ID: "update", Name: "update_progress", Arguments: json.RawMessage(arguments)}}},
 				{Content: "invalid checklist"},
 			}}
-			agent, err := New(Config{Provider: provider, Model: "test", Tools: []Tool{NewUpdatePlanTool()}})
+			agent, err := New(Config{Provider: provider, Model: "test", Tools: []Tool{NewUpdateProgressTool()}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -327,7 +327,7 @@ func TestSessionRejectsMalformedCollaborationCheckpoint(t *testing.T) {
 	for _, payload := range []string{
 		`{"type":"mode_changed"}`,
 		`{"type":"mode_changed","collaboration":{"mode":"unknown"}}`,
-		`{"type":"plan_updated","collaboration":{"mode":"default"}}`,
+		`{"type":"progress_updated","collaboration":{"mode":"default"}}`,
 		`{"type":"plan_saved","collaboration":{"mode":"plan"}}`,
 	} {
 		t.Run(payload, func(t *testing.T) {

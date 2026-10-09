@@ -47,6 +47,9 @@ func writeSummarySnapshot(dir, sessionPath, sessionID, runID string, eventID uin
 		body += "\n## Summary focus\n\n" + state.Instructions + "\n"
 	}
 	body += "\n## Checkpoint\n\n" + state.Summary + "\n"
+	if len(state.Sources) > 0 {
+		body += "\n## Original history sources\n" + sourceIndex(state.Sources) + "\n"
+	}
 	if _, err := io.WriteString(file, body); err != nil {
 		return path, err
 	}

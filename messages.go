@@ -21,6 +21,7 @@ func (a *Agent) Reset() error {
 	a.messages = nil
 	a.collaboration.Plan = nil
 	a.collaboration.Progress = nil
+	a.collaboration.Approval = nil
 	return nil
 }
 
@@ -28,8 +29,7 @@ func (a *Agent) Reset() error {
 func cloneMessages(messages []Message) []Message {
 	result := make([]Message, len(messages))
 	for i, message := range messages {
-		result[i] = message
-		result[i].ToolCalls = cloneToolCalls(message.ToolCalls)
+		result[i] = *cloneMessagePointer(message)
 	}
 	return result
 }
@@ -55,5 +55,10 @@ func cloneToolCallPointer(call ToolCall) *ToolCall {
 func cloneMessagePointer(message Message) *Message {
 	copy := message
 	copy.ToolCalls = cloneToolCalls(message.ToolCalls)
+	if message.Source != nil {
+		source := *message.Source
+		copy.Source = &source
+	}
+	copy.Sources = append([]SourceRange(nil), message.Sources...)
 	return &copy
 }

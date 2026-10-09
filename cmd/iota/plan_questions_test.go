@@ -37,7 +37,7 @@ func TestPlanningOptionsAndCustomAnswerUseLoggedConversation(t *testing.T) {
 			t.Error("question guidance missing")
 		}
 		if requests == 2 {
-			if body.Messages[len(body.Messages)-1].Content != answer {
+			if body.Messages[len(body.Messages)-2].Content != answer {
 				t.Error("custom answer was not sent verbatim")
 			}
 			arguments, err := json.Marshal(struct {

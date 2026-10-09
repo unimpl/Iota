@@ -37,6 +37,8 @@ type Session struct {
 	contextLimitTokens int
 	contextLimitModel  string
 	summaryDir         string
+	history            []Message
+	resetSeq           uint64
 }
 
 // sessionRecord 是单行 JSONL 的固定外壳；保留查看器使用的事件结构。
@@ -131,11 +133,14 @@ func (s *Session) Run(ctx context.Context, agent *Agent, prompt string, emit Emi
 	if err != nil {
 		return RunResult{}, err
 	}
+	agent.mu.Lock()
+	agent.history = s
+	agent.mu.Unlock()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	result, runErr := agent.run(ctx, prompt, func(event Event) {
 		// State checkpoints were durably recorded before being published.
-		if !isCollaborationEvent(event.Type) && event.Type != EventContextCompacted {
+		if !isCollaborationEvent(event.Type) && event.Type != EventContextCompacted && event.Type != EventMessageAdded {
 			if err := s.write(runID, string(event.Type), event); err != nil {
 				cancel()
 			}
@@ -177,6 +182,7 @@ func (s *Session) Restore(agent *Agent) error {
 	}
 	agent.messages = cloneMessages(s.messages)
 	agent.collaboration = cloneCollaboration(s.collaboration)
+	agent.history = s
 	agent.contextLimitTokens = 0
 	if agent.model == s.contextLimitModel {
 		agent.contextLimitTokens = s.contextLimitTokens
@@ -210,6 +216,7 @@ func (s *Session) Reset(agent *Agent) error {
 	agent.messages = nil
 	agent.collaboration.Plan = nil
 	agent.collaboration.Progress = nil
+	agent.collaboration.Approval = nil
 	return nil
 }
 
@@ -249,6 +256,17 @@ func (s *Session) write(runID, kind string, payload any) error {
 	defer s.mu.Unlock()
 	if err := s.checkOpen(); err != nil {
 		return err
+	}
+	if kind == string(EventMessageAdded) {
+		event, ok := payload.(Event)
+		if !ok || event.Message == nil || event.Message.RuntimeContext {
+			return errors.New("invalid persisted message")
+		}
+		stepID := activeStepID(s.collaboration)
+		if event.Message.Role == RoleUser {
+			stepID = ""
+		}
+		event.Message.Source = &MessageSource{Seq: s.seq + 1, RunID: runID, StepID: stepID}
 	}
 	if isCollaborationEvent(EventType(kind)) {
 		event, ok := payload.(Event)
@@ -298,6 +316,8 @@ func (s *Session) write(runID, kind string, payload any) error {
 		s.messages = nil
 		s.collaboration.Plan = nil
 		s.collaboration.Progress = nil
+		s.collaboration.Approval = nil
+		s.resetSeq = s.seq
 	} else if event, ok := payload.(Event); ok && event.Type == EventContextCompacted {
 		s.messages = cloneMessages(event.Compaction.Context.Messages)
 		s.contextLimitTokens = event.Compaction.ContextLimitTokens
@@ -306,6 +326,7 @@ func (s *Session) write(runID, kind string, payload any) error {
 		s.collaboration = cloneCollaboration(*event.Collaboration)
 	} else if event, ok := payload.(Event); ok && event.Type == EventMessageAdded && event.Message != nil {
 		s.messages = append(s.messages, *cloneMessagePointer(*event.Message))
+		s.history = append(s.history, *cloneMessagePointer(*event.Message))
 	}
 	return nil
 }

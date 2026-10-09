@@ -47,16 +47,19 @@ func TestLeavingPlanModePreservesHistoryAndRestoresDefaultWorkflow(t *testing.T)
 		t.Fatal(err)
 	}
 	request := provider.requests[2]
-	if request.Mode != ModeDefault || request.Messages[len(request.Messages)-1].Content != "hi" || writes != 0 {
+	if request.Mode != ModeDefault || request.Messages[len(request.Messages)-2].Content != "hi" || writes != 0 {
 		t.Fatalf("request=%+v writes=%d", request, writes)
 	}
 	if !strings.Contains(request.Messages[len(history)-1].Content, "waiting for approval") {
 		t.Fatal("original planning history was removed")
 	}
-	for _, instruction := range []string{"[Collaboration mode: default]", "Earlier planning-only restrictions", "Respond to the user's latest message", "does not approve, cancel, or start", "do not suggest /execute alone", "Saved plan file (reference only): " + plan.Path} {
+	for _, instruction := range []string{"[Collaboration mode: default]", "Earlier planning-only restrictions", "Respond to the user's latest message", "does not approve, cancel, or start", "do not suggest /execute alone"} {
 		if !strings.Contains(request.SystemPrompt, instruction) {
 			t.Fatalf("missing current-mode guidance %q", instruction)
 		}
+	}
+	if !strings.Contains(request.Messages[len(request.Messages)-1].Content, plan.Path) {
+		t.Fatal("saved plan reference missing from runtime suffix")
 	}
 	if strings.Contains(request.SystemPrompt, "# Iota 规划模式") {
 		t.Fatal("planning template leaked into default mode")

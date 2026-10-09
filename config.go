@@ -83,7 +83,7 @@ func New(config Config) (*Agent, error) {
 		if _, ok := seen[tool.Name]; ok {
 			return nil, fmt.Errorf("duplicate tool name %q", tool.Name)
 		}
-		if tool.Execute == nil && !tool.planTool {
+		if tool.Execute == nil && !tool.planTool && !tool.historyTool {
 			return nil, fmt.Errorf("tool %q has no execute function", tool.Name)
 		}
 		if tool.planTool && tool.Name == "save_plan" && config.PlansDir == "" {

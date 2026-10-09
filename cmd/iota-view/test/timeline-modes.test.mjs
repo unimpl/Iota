@@ -11,7 +11,7 @@ test('mode checkpoints persist across idle events, reset and runs', () => {
     { type: 'session_reset' },
     { type: 'plan_approved', payload: { collaboration: { mode: 'default' } } },
     { type: 'run_start', run_id: 'b' },
-    { type: 'plan_updated', run_id: 'b', payload: { collaboration: { mode: 'default' } } },
+    { type: 'progress_updated', run_id: 'b', payload: { collaboration: { mode: 'default' } } },
   ];
   const modes = timelineModes(records);
   assert.deepEqual(records.map(record => modes.get(record).mode), ['default', 'plan', 'plan', 'plan', 'plan', 'default', 'default', 'default']);

@@ -66,7 +66,7 @@ func TestAgentRecoversFromHTTPAndStreamCapacityErrors(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if len(requests) != 7 || !strings.Contains(requests[5].Messages[0].Content, "CONTEXT CHECKPOINT COMPACTION") || len(requests[5].Tools) != 0 || !strings.Contains(requests[6].Messages[0].Content, "project instructions") || !strings.Contains(requests[6].Messages[1].Content, "<summary>") {
+			if len(requests) != 8 || !strings.Contains(requests[5].Messages[0].Content, "CONTEXT CHECKPOINT COMPACTION") || len(requests[5].Tools) != 0 || !strings.Contains(requests[7].Messages[0].Content, "project instructions") || !strings.Contains(requests[7].Messages[1].Content, "<summary>") {
 				t.Fatalf("incorrect recovery request sequence: %d calls", len(requests))
 			}
 		})

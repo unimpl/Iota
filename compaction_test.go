@@ -117,13 +117,13 @@ func TestAutomaticCompactionStagesAndRunResult(t *testing.T) {
 	if len(states) != 2 || states[0].Stage != "tool_results" || states[1].Stage != "summary" || states[1].ContextLimitTokens != 128000 {
 		t.Fatalf("states=%+v", states)
 	}
-	if len(provider.requests) != 4 || len(provider.requests[2].Tools) != 0 {
-		t.Fatalf("requests=%+v", provider.requests)
+	if len(provider.requests) != 5 || len(provider.requests[2].Tools) != 0 || len(provider.requests[3].Tools) != 0 {
+		t.Fatalf("requests=%d", len(provider.requests))
 	}
 }
 
 func TestCompactionFailurePreservesHistory(t *testing.T) {
-	for _, scenario := range []string{"length", "tool", "empty", "error", "cancel", "write"} {
+	for _, scenario := range []string{"length", "tool", "empty", "oversized", "error", "cancel", "write"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -135,6 +135,8 @@ func TestCompactionFailurePreservesHistory(t *testing.T) {
 					return Response{Content: "summary", StopReason: "stop", ToolCalls: []ToolCall{{ID: "unexpected", Name: "write", Arguments: json.RawMessage(`{}`)}}}, nil
 				case "empty":
 					return Response{StopReason: "stop"}, nil
+				case "oversized":
+					return Response{Content: strings.Repeat("x", summaryMaxChars+1), StopReason: "stop"}, nil
 				case "error":
 					return Response{}, errors.New("network unavailable")
 				case "cancel":
@@ -177,8 +179,19 @@ func TestCompactionSplitsOversizedSummaryInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pieces) < 2 || !json.Valid([]byte(strings.Join(pieces, ""))) {
-		t.Fatalf("incomplete serialized conversation: %d pieces", len(pieces))
+	var recovered []Message
+	for _, piece := range pieces {
+		var chunk []Message
+		if err := json.Unmarshal([]byte(piece), &chunk); err != nil {
+			t.Fatal(err)
+		}
+		if pending, err := pendingSessionCalls(chunk); err != nil || len(pending) != 0 {
+			t.Fatalf("split tool batch: %v", err)
+		}
+		recovered = append(recovered, chunk...)
+	}
+	if len(pieces) < 2 || len(recovered) != 4 {
+		t.Fatalf("incomplete conversation: %d pieces, %d messages", len(pieces), len(recovered))
 	}
 }
 
@@ -216,7 +229,7 @@ func TestCompactionPreservesPlanAndReloadsInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := provider.requests[len(provider.requests)-1]
-	if request.Mode != ModePlan || !strings.Contains(request.SystemPrompt, rule) || !strings.Contains(request.SystemPrompt, before.Plan.Content) || !strings.Contains(request.SystemPrompt, "Active skill instructions") || len(request.Tools) != 1 || request.Tools[0].Name != "read" || !reflect.DeepEqual(before, agent.Collaboration()) {
+	if request.Mode != ModePlan || !strings.Contains(request.SystemPrompt, rule) || !reflect.DeepEqual(requestCollaboration(t, request), before) || !strings.Contains(request.SystemPrompt, "Active skill instructions") || len(request.Tools) != 1 || request.Tools[0].Name != "read" || !reflect.DeepEqual(before, agent.Collaboration()) {
 		t.Fatalf("request=%+v state=%+v", request, agent.Collaboration())
 	}
 }
@@ -312,7 +325,7 @@ func TestAutomaticRecoveryIsBoundedAndIgnoresRateLimits(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected terminal error")
 		}
-		want := 4
+		want := 5
 		if rateLimit {
 			want = 1
 		}

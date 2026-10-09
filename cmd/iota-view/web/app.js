@@ -617,8 +617,8 @@ function renderEvent(item, turnKey, list, modeState) {
       badge.textContent = 'PLAN'; title.textContent = '规划文档已保存';
       summary(payload.collaboration?.plan?.path);
       break;
-    case 'plan_updated': {
-      badge.textContent = 'PLAN'; title.textContent = '执行步骤已更新';
+    case 'progress_updated': {
+      badge.textContent = 'PROGRESS'; title.textContent = '执行步骤已更新';
       const progress = payload.collaboration?.progress;
       summary(progress?.explanation);
       if (progress?.plan?.length) {

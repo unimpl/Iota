@@ -2,6 +2,7 @@ package iota
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,12 +28,15 @@ type SavedPlan struct {
 }
 
 type PlanStep struct {
+	ID     string `json:"step_id,omitempty"`
 	Step   string `json:"step"`
 	Status string `json:"status"`
 }
 
 // PlanProgress is the execution checklist, separate from the Markdown design.
 type PlanProgress struct {
+	ID          string     `json:"id,omitempty"`
+	Version     uint64     `json:"version,omitempty"`
 	Explanation string     `json:"explanation,omitempty"`
 	Plan        []PlanStep `json:"plan"`
 }
@@ -42,6 +46,17 @@ type CollaborationState struct {
 	Mode     Mode          `json:"mode"`
 	Plan     *SavedPlan    `json:"plan,omitempty"`
 	Progress *PlanProgress `json:"progress,omitempty"`
+	Approval *PlanApproval `json:"approval,omitempty"`
+}
+
+// PlanApproval binds authorization to the exact saved content, not just its path.
+type PlanApproval struct {
+	PlanID      string `json:"plan_id"`
+	ContentHash string `json:"content_hash"`
+}
+
+func planContentHash(content string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 }
 
 func validateMode(mode Mode) error {
@@ -52,6 +67,10 @@ func validateMode(mode Mode) error {
 }
 
 func cloneCollaboration(state CollaborationState) CollaborationState {
+	if state.Approval != nil {
+		approval := *state.Approval
+		state.Approval = &approval
+	}
 	if state.Plan != nil {
 		plan := *state.Plan
 		state.Plan = &plan
@@ -109,7 +128,7 @@ func (a *Agent) setMode(mode Mode, emit EmitFunc, record func(Event) error) erro
 }
 
 func isCollaborationEvent(kind EventType) bool {
-	return kind == EventModeChanged || kind == EventPlanSaved || kind == EventPlanUpdated || kind == EventPlanApproved
+	return kind == EventModeChanged || kind == EventPlanSaved || kind == EventProgressUpdated || kind == EventPlanApproved
 }
 
 func validateCollaboration(state CollaborationState) error {
@@ -124,6 +143,9 @@ func validateCollaboration(state CollaborationState) error {
 		if err := validatePlanContent(plan.Content); err != nil {
 			return err
 		}
+	}
+	if state.Approval != nil && (state.Plan == nil || state.Approval.PlanID != state.Plan.ID || state.Approval.ContentHash != planContentHash(state.Plan.Content)) {
+		return errors.New("approval does not match the saved plan version")
 	}
 	if state.Progress != nil {
 		return validateProgress(*state.Progress)
@@ -145,13 +167,21 @@ func validateCollaborationEvent(event Event) error {
 		if state.Mode != ModePlan || state.Plan == nil {
 			return errors.New("plan_saved requires a saved plan in plan mode")
 		}
-	case EventPlanUpdated:
+	case EventProgressUpdated:
 		if state.Mode != ModeDefault || state.Progress == nil {
-			return errors.New("plan_updated requires an execution checklist in default mode")
+			return errors.New("progress_updated requires an execution checklist in default mode")
+		}
+		if state.Progress.ID == "" || state.Progress.Version == 0 {
+			return errors.New("progress_updated requires a checklist ID and version")
+		}
+		for _, step := range state.Progress.Plan {
+			if step.ID == "" {
+				return errors.New("progress_updated requires stable step IDs")
+			}
 		}
 	case EventPlanApproved:
-		if state.Mode != ModeDefault || state.Plan == nil {
-			return errors.New("plan_approved requires a saved plan in default mode")
+		if state.Mode != ModeDefault || state.Plan == nil || state.Approval == nil {
+			return errors.New("plan_approved requires a saved plan and version-bound approval in default mode")
 		}
 	default:
 		return errors.New("unknown collaboration event")
@@ -183,8 +213,14 @@ func (a *Agent) commitCollaboration(ctx context.Context, kind EventType, state C
 
 func (a *Agent) toolAllowed(tool Tool) bool {
 	mode := a.Mode()
+	if tool.historyTool {
+		a.mu.Lock()
+		available := a.history != nil
+		a.mu.Unlock()
+		return available && (mode == ModeDefault || tool.ReadOnly)
+	}
 	if tool.planTool {
-		return (tool.Name == "save_plan" && mode == ModePlan) || (tool.Name == "update_plan" && mode == ModeDefault)
+		return (tool.Name == "save_plan" && mode == ModePlan) || (tool.Name == "update_progress" && mode == ModeDefault)
 	}
 	return mode == ModeDefault || tool.ReadOnly
 }
@@ -207,7 +243,7 @@ You are currently in default mode. Earlier planning-only restrictions in convers
 Respond to the user's latest message. A greeting or unrelated question does not request execution of a saved plan; do not repeatedly remind the user to approve it or automatically resume it.
 Switching to default does not approve, cancel, or start a saved plan. A saved plan is a reference, not the current task. When the user explicitly requests implementation in default mode, carry out that request rather than imposing the previous planning-only workflow.
 The CLI /execute command is available only in plan mode with a saved plan. In default mode, do not suggest /execute alone; if the user asks to use it, explain /plan followed by /execute. To revise a saved plan with save_plan, the user must first enter /plan.
-Use update_plan, when available, to maintain an execution checklist with at most one in_progress step.`
+Use update_progress, when available, to maintain an execution checklist with at most one in_progress step.`
 	if state.Mode == ModePlan {
 		template, err := loadPlanTemplate(ctx, a.planTemplatePath)
 		if err != nil {
@@ -215,18 +251,9 @@ Use update_plan, when available, to maintain an execution checklist with at most
 		}
 		guidance = "[Collaboration mode: plan]\n" + template
 	}
-	if state.Plan != nil {
-		label := "Current plan file: "
-		if state.Mode == ModeDefault {
-			label = "Saved plan file (reference only): "
-		}
-		guidance += "\n" + label + state.Plan.Path
-		guidance += "\n<saved-plan>\n" + state.Plan.Content + "\n</saved-plan>"
-	}
-	if state.Progress != nil {
-		data, _ := json.Marshal(state.Progress)
-		guidance += "\nCurrent execution checklist: " + string(data)
-	}
+	guidance += `
+The runtime-context block at the end of this request is the current state, not a new user request. Older checklist versions in history are historical evidence. In default mode, preserve program-assigned checklist and step IDs. Before working on a checklist step, mark it in_progress; verify completion before marking it completed. An in_progress step may have partially completed actions; inspect actual results before repeating an interrupted operation. Revise progress when new evidence requires it, and never mark unfinished work completed merely because a run ends.
+When an omitted detail affects the next decision, use search_history and read_history, when available, to inspect original records. Prefer the supplied seq ranges; do not invent missing decisions, file contents, or tool results.`
 	base := a.systemPrompt
 	if a.systemPromptLoader != nil {
 		var err error
@@ -249,11 +276,11 @@ func NewSavePlanTool() Tool {
 	}
 }
 
-// NewUpdatePlanTool declares the default-mode execution checklist tool.
-func NewUpdatePlanTool() Tool {
-	return Tool{Name: "update_plan", planTool: true,
-		Description: "Replace the execution checklist in default mode. Each step has pending, in_progress, or completed status; at most one step may be in_progress. This does not edit the Markdown plan.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"explanation":{"type":"string"},"plan":{"type":"array","minItems":1,"items":{"type":"object","properties":{"step":{"type":"string","minLength":1},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}`),
+// NewUpdateProgressTool declares the default-mode execution checklist tool.
+func NewUpdateProgressTool() Tool {
+	return Tool{Name: "update_progress", planTool: true,
+		Description: "Create or replace the complete execution checklist in default mode. For an existing checklist, include its id and retain existing step_id values. Omit IDs only for a new checklist or new steps; the program assigns them. Each step has pending, in_progress, or completed status; at most one step may be in_progress. This does not edit the Markdown plan.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","minLength":1},"explanation":{"type":"string"},"plan":{"type":"array","minItems":1,"items":{"type":"object","properties":{"step_id":{"type":"string","minLength":1},"step":{"type":"string","minLength":1},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}`),
 	}
 }
 
@@ -272,7 +299,14 @@ func validateProgress(progress PlanProgress) error {
 		return errors.New("execution plan must contain at least one step")
 	}
 	active := 0
+	ids := make(map[string]bool)
 	for _, item := range progress.Plan {
+		if item.ID != "" {
+			if ids[item.ID] {
+				return errors.New("duplicate progress step ID")
+			}
+			ids[item.ID] = true
+		}
 		if strings.TrimSpace(item.Step) == "" {
 			return errors.New("plan step cannot be blank")
 		}
@@ -292,16 +326,19 @@ func validateProgress(progress PlanProgress) error {
 
 func (a *Agent) executePlanTool(ctx context.Context, call ToolCall, turn int, emit EmitFunc, record func(Event) error) (string, error) {
 	state := a.Collaboration()
-	if call.Name == "update_plan" {
+	if call.Name == "update_progress" {
 		var progress PlanProgress
 		if err := json.Unmarshal(call.Arguments, &progress); err != nil {
 			return "", err
 		}
-		state.Progress = &progress
-		if err := a.commitCollaboration(ctx, EventPlanUpdated, state, turn, emit, record); err != nil {
+		if err := prepareProgress(&progress, state.Progress); err != nil {
 			return "", err
 		}
-		return "Execution plan updated.", nil
+		state.Progress = &progress
+		if err := a.commitCollaboration(ctx, EventProgressUpdated, state, turn, emit, record); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Execution progress %s saved (version %d). Latest state is supplied in runtime-context.", progress.ID, progress.Version), nil
 	}
 	var input struct {
 		Content string `json:"content"`
@@ -329,6 +366,7 @@ func (a *Agent) executePlanTool(ctx context.Context, call ToolCall, turn int, em
 	}
 	state.Plan.Content = input.Content
 	state.Progress = nil
+	state.Approval = nil
 	if err := writePlanFile(ctx, path, input.Content); err != nil {
 		return "", err
 	}
@@ -390,6 +428,7 @@ func (a *Agent) approvePlan(emit EmitFunc, record func(Event) error) (SavedPlan,
 		state.Progress = nil
 	}
 	state.Plan.Content = string(data)
+	state.Approval = &PlanApproval{PlanID: state.Plan.ID, ContentHash: planContentHash(state.Plan.Content)}
 	state.Mode = ModeDefault
 	if err := a.commitCollaboration(context.Background(), EventPlanApproved, state, 0, emit, record); err != nil {
 		return SavedPlan{}, err

@@ -16,7 +16,7 @@ import (
 )
 
 // defaultTools 是未显式配置时开放给模型的内置工具列表。
-const defaultTools = "read,list,write,edit,bash,save_plan,update_plan"
+const defaultTools = "read,list,write,edit,bash,save_plan,update_progress,search_history,read_history"
 
 // fileConfig 对应 TOML 配置；指针和切片保留“未设置”与“显式置空”的区别。
 type fileConfig struct {

@@ -121,6 +121,13 @@ func (a *Agent) executeTool(ctx context.Context, call ToolCall, turn int, emit E
 		}
 		return text, false
 	}
+	if selected.tool.historyTool {
+		text, err := a.executeHistoryTool(ctx, call)
+		if err != nil {
+			return err.Error(), true
+		}
+		return text, false
+	}
 	text, err := selected.tool.Execute(ctx, call.Arguments)
 	if err != nil {
 		return err.Error(), true

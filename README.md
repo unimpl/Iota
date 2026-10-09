@@ -29,7 +29,7 @@ base_url = "https://api.openai.com/v1"
 api_key = "$API_KEY" # 运行时读取该环境变量，不把凭据写入文件
 cwd = "."
 system = "回答前先读取相关文件。"
-tools = ["read", "list", "write", "edit", "bash", "save_plan", "update_plan"]
+tools = ["read", "list", "write", "edit", "bash", "save_plan", "update_progress", "search_history", "read_history"]
 mode = "default" # plan 表示先探索和编写计划
 max_turns = 20
 timeout = "2m"
@@ -45,7 +45,11 @@ CLI 支持 `~/.iota/SYSTEM.md` 和工作目录中的 `.iota/SYSTEM.md`：找到�
 
 ### 上下文压缩
 
-`/compact` 先裁剪旧工具结果，保留其首尾各 1000 个字符及裁剪标记。最近 N 轮保持完整原文：一轮指用户请求和它后面的所有助手回复、工具调用与结果，直到下一条用户请求。`compaction_keep_recent_turns` 默认是 3，配置文件可以省略该项，显式值必须为正整数；没有对应环境变量或命令行参数。
+`/compact` 先裁剪旧工具结果，保留其首尾各 1000 个字符及裁剪标记。优先保护最近 N 轮原文：一轮指用户请求和它后面的所有助手回复、工具调用与结果，直到下一条用户请求。`compaction_keep_recent_turns` 默认是 3，配置文件可以省略该项，显式值必须为正整数；没有对应环境变量或命令行参数。
+
+摘要按 run 和稳定的 `step_id` 组织，输入分块以约 12000 token 的估算预算为目标，完整助手工具调用批次及其结果不拆开。已有检查点顺序参与更新，最终摘要限制为 8000 个字符。近期单个 run 本身超过分块预算，或正常请求已经超限时，可以压缩该 run 内较早的完整批次；最新批次自身过大时，自动恢复也可将它整体纳入摘要。单个摘要批次仍超限时，保留首尾文本和有效 JSON 参数摘录，并标记省略及原始来源；不会按字符切断序列化 JSON。
+
+原始消息记录其 `seq`、`run_id` 和执行中的 `step_id`。摘要检查点保存程序生成的来源区间；同一步骤跨 run 恢复时保留多个区间。模型可见的来源索引最多保留 32 个区间，较老区间合并为宽范围，精细索引仍在 JSONL 检查点中。
 
 手动压缩时，若裁剪让整个请求的字符数至少减少 20%，直接使用裁剪后的历史；否则调用当前模型，将更老的对话总结成检查点。`/compact 保留文件路径、关键决策和未完成事项` 会生成指定重点的摘要。已有摘要参与下一次摘要更新。摘要提示参考 Codex 的 `compact/prompt.md`，摘要请求不提供工具，正文不写入普通助手输出。
 
@@ -53,7 +57,7 @@ CLI 支持 `~/.iota/SYSTEM.md` 和工作目录中的 `.iota/SYSTEM.md`：找到�
 
 正常请求遇到明确的上下文超限错误时，先裁剪旧工具结果并重试；重试仍超限则生成旧历史摘要并再次重试。每个模型轮次最多进行一次工具裁剪和一次摘要恢复，不会无限重试。服务端错误给出明确容量数字时，会将它记录为上下文上限；没有数字时保持未知，不从 usage 推测容量，也不依赖预置模型目录。速率限制、网络错误和一般输出截断不触发容量恢复。
 
-压缩不改变 plan/default 模式、计划批准状态或工具权限。系统规则、规划模板、当前计划正文和执行进度在正常请求中独立注入，不依赖摘要记住它们。SDK 可以使用 `Config.SystemPromptLoader` 动态注入项目规则或未来的 skills 指令；SDK 自身不自动发现这些文件。
+压缩不改变 plan/default 模式、计划批准状态或工具权限。系统规则、规划模板与状态解释规则放在 system。当前计划、绑定正文版本的批准信息和最新完整进度，作为本次请求末尾的临时 `runtime-context` 消息加载，不加入普通消息历史。下一次请求替换这份尾部状态，前面的历史保持原样，有利于复用长前缀缓存；实际缓存命中由服务商决定。SDK 可以使用 `Config.SystemPromptLoader` 动态注入项目规则或未来的 skills 指令；SDK 自身不自动发现这些文件。
 
 压缩结果作为 `context_compacted` 检查点追加到 JSONL，原始事件不删除；恢复时替换有效消息历史，避免重新带回已压缩的旧内容。查看器顶部展示当前有效上下文、历史摘要和已知容量，时间线标出裁剪或摘要、前后字符数、保留轮数及摘要重点，并可展开检查点中的系统提示、消息和工具。字符统计是序列化请求的大小，不是精确 token 用量。
 
@@ -67,7 +71,9 @@ CLI 支持 `~/.iota/SYSTEM.md` 和工作目录中的 `.iota/SYSTEM.md`：找到�
 
 查看器展示快照地址、“打开摘要 Markdown”和按需加载的文件预览，并显示压缩检查点的前后 token 用量、容量和余量；后续新增消息可能增加当前用量。文件缺失时仍可查看 JSONL 内的摘要。预览只读取选中会话对应的快照，同一会话内复用已加载的内容，不预先加载所有会话的 Markdown。
 
-摘要错误、取消、空内容、输出截断或工具调用不会替换历史。如果最近 N 轮或系统规则自身已过大，压缩不能解决超限；需要减少保护轮数、缩短输入或使用 `/reset`。`/reset` 清空历史，`/compact` 保留近期原文和旧历史摘要。
+摘要错误、取消、空内容、输出截断、超过摘要输出预算或工具调用不会替换历史。系统规则或独立加载的计划状态自身过大时，历史压缩仍不能解决超限；需要缩短这些内容。单个初始用户消息没有可保留的完整后续批次时，也可能无法自动恢复。`/reset` 清空历史，`/compact` 保留近期原文和旧历史摘要。
+
+`search_history` 与 `read_history` 只在绑定持久化 Session 时声明，`--no-session` 下不声明。前者执行不区分大小写的字面搜索，返回片段和来源；后者按包含端点的 `start_seq`、`end_seq` 读取原始用户/助手消息和工具调用、结果，不返回重复的模型请求或流片段。返回值最多 32 KiB，可用 `next_seq`、`next_offset` 继续读取；offset 按 Unicode 字符计数。支持 `run_id`、`step_id` 过滤，默认只读取最近 `/reset` 之后的记录，显式 `include_before_reset: true` 才访问同 session 内更早的记录。压缩后的原始记录仍可查询。
 
 ### 规划与执行
 
@@ -81,19 +87,23 @@ Iota 内置 `plan` 和 `default` 两种协作模式。启动时默认使用 `def
 | `/mode [plan\|default]` | 查看或切换模式 |
 | `/execute` | 读取并批准当前计划，切换到默认模式，然后执行 |
 
-规划模式只声明和执行只读工具与 `save_plan`，禁用 `write`、`edit`、`bash` 和 `update_plan`。`list` 列出目录，`read` 读取文件，模型可据此探索和讨论。随后调用 `save_plan`，传入以 Markdown 标题开头的完整计划；工具不接受目标路径。计划写入用户目录的 `~/.iota/plans/<plan-id>.md`，同一计划的修订继续写入该文件。保存后保持规划模式，不自动开始执行。
+规划模式只声明和执行只读工具与 `save_plan`，禁用 `write`、`edit`、`bash` 和 `update_progress`。`list` 列出目录，`read` 读取文件，模型可据此探索和讨论。随后调用 `save_plan`，传入以 Markdown 标题开头的完整计划；工具不接受目标路径。计划写入用户目录的 `~/.iota/plans/<plan-id>.md`，同一计划的修订继续写入该文件。保存后保持规划模式，不自动开始执行。
 
 默认规划模板位于用户目录的 `~/.iota/plans/template.md`，包含“确认现状 → 澄清目标与选择 → 形成实施方案”的流程，以及计划文档结构。进入 `/plan` 时检查该文件，缺失则从随程序打包的默认模板创建；已有文件不会被覆盖。每次规划请求重新读取模板，修改后的内容在下一次请求生效。仓库的 `iota/plans/template.md` 是打包资源，不是运行时的项目配置。空文件、无效 UTF-8 或读取失败会报错，不会静默替换用户的模板。默认模式不读取或创建此文件。
 
 澄清问题通过现有对话输入呈现：每题给出少量编号选项、标明推荐方案，并提供自定义输入。用户可以选择编号或直接输入自己的方案；模型应等待关键选择确定后再保存最终计划。问题和回答作为普通助手、用户消息记录到 session JSONL，实际应用的模板正文随 `model_request` 的系统提示保存。
 
-可以直接编辑计划文件，然后输入 `/execute`。Iota 会重新读取文件，将实际批准的内容记录到日志并交给模型执行。默认模式的 `update_plan` 用于维护执行清单：步骤状态为 `pending`、`in_progress` 或 `completed`，最多一个步骤处于 `in_progress`；它不改写 Markdown 计划文件。规划模式提示符为 `[you:plan] >`，计划路径和步骤状态写入 stderr。
+可以直接编辑计划文件，然后输入 `/execute`。Iota 会重新读取文件，将实际批准的内容及正文哈希记录到日志并交给模型执行。默认模式的 `update_progress` 用于创建和更新完整执行清单：步骤状态为 `pending`、`in_progress` 或 `completed`，最多一个步骤处于 `in_progress`；它不改写 Markdown 计划文件。首次省略清单和步骤 ID，由程序分配；后续传入清单 `id`、保留已有 `step_id`，新增步骤省略 ID。清单版本由程序递增，工具结果只确认保存，最新完整状态从请求尾部加载。规划模式提示符为 `[you:plan] >`，计划路径和步骤状态写入 stderr。
+
+默认模式每个 run 仅在第一次模型请求附加任务判断与复杂任务拆分提示，后续请求保留执行、更新与必要修订规则。超限恢复重试仍属于同一个模型轮次。用户输入“继续”“go on”“continue”时，模型结合恢复出的 progress、plan、批准信息与最近对话处理；未完成清单沿用稳定 ID，中断步骤先核实实际结果。规划模式继续完善方案。不存在 `/continue` 命令。
 
 `/default` 保留历史和计划文件，只解除当前规划模式的限制，不代表批准、取消或开始执行。默认模式的提示明确要求回应最新消息，不把保存的计划自动当成当前任务，也不反复催促批准。`/execute` 只在规划模式且已有保存计划时有效；已返回默认模式的用户可先 `/plan` 再 `/execute`，或直接提出新的工作请求。
 
-启用会话保存时，模式变化、计划保存、计划批准和步骤更新分别写为 `mode_changed`、`plan_saved`、`plan_approved` 和 `plan_updated`。记录包含完整协作状态、计划正文和步骤，工具调用与失败也保留原有事件。恢复会话时重放这些记录，并恢复缺失的计划文件；已有文件的人工修改会保留。计划存储不依赖工作目录，CLI 可以在切换目录后恢复同一份用户计划；文件工具仍使用当前工作目录。显式配置模式会覆盖恢复的模式；未指定模式时沿用日志中的状态。
+启用会话保存时，模式变化、计划保存、计划批准和步骤更新分别写为 `mode_changed`、`plan_saved`、`plan_approved` 和 `progress_updated`。记录包含完整协作状态、计划正文和步骤，工具调用与失败也保留原有事件。恢复会话时重放这些记录，并恢复缺失的计划文件；已有文件的人工修改会保留。计划存储不依赖工作目录，CLI 可以在切换目录后恢复同一份用户计划；文件工具仍使用当前工作目录。显式配置模式会覆盖恢复的模式；未指定模式时沿用日志中的状态。
 
-`/reset` 清空对话和当前计划、进度状态，保留所选模式及已生成的计划文件；旧记录仍留在 JSONL 中。`--no-session` 仍能生成计划文件，但不保存会话日志。
+`/reset` 清空对话和当前计划、进度及批准状态，保留所选模式及已生成的计划文件；旧记录仍留在 JSONL 中。`--no-session` 仍能生成计划文件，但不保存会话日志。
+
+工具名已由 `update_plan` 改为 `update_progress`，事件名已由 `plan_updated` 改为 `progress_updated`，不提供旧名称别名。配置需要使用新工具名；包含旧 `plan_updated` 事件、或缺少版本批准信息的旧 `plan_approved` 快照的日志恢复时明确报错，避免静默丢失进度或授权信息。
 
 终端输出按角色区分颜色和格式：
 
@@ -132,13 +142,13 @@ go run ./cmd/iota-view --folder /path/to/sessions
 --system      附加系统提示
 --max-turns   每次运行最多模型轮数，默认 20
 --timeout     每次模型请求及 bash 命令的默认超时，默认 2m
---tools       read,list,write,edit,bash,save_plan,update_plan 的逗号列表；none 表示禁用
+--tools       read,list,write,edit,bash,save_plan,update_progress,search_history,read_history 的逗号列表；none 表示禁用
 --mode        default 或 plan
 --no-session  关闭会话保存
 --resume      按路径或 UUID 恢复会话；传空字符串时恢复最近修改的会话
 ```
 
-CLI 默认配置 `read`、`list`、`write`、`edit`、`bash` 和两个计划工具；实际开放的工具由当前模式决定。工具使用当前进程权限；规划模式的工具检查不是操作系统沙箱。
+CLI 默认配置文件工具、`save_plan`、`update_progress` 和两个历史工具；实际开放的工具由当前模式及 Session 是否启用决定。工具使用当前进程权限；规划模式的工具检查不是操作系统沙箱。
 
 ## SDK
 
@@ -173,9 +183,11 @@ result, err := agent.Run(context.Background(), "解释 README", func(event iota.
 
 SDK 不读取配置文件、环境变量、`AGENTS.md` 或终端。只有 `cmd/iota` 处理 CLI 配置；SDK 调用者显式注入 Provider、模型、系统提示和工具。SDK 默认不注册工具。
 
-SDK 使用规划工具时，在 `Config.Tools` 中注册 `iota.NewSavePlanTool()`、`iota.NewUpdatePlanTool()`，并通过 `Config.PlansDir` 明确提供计划目录；可通过 `Config.Mode` 选择初始模式。自定义工具只有标记 `ReadOnly: true` 才能在规划模式执行，这个标记的真实性由工具实现方负责。
+SDK 使用规划工具时，在 `Config.Tools` 中注册 `iota.NewSavePlanTool()`、`iota.NewUpdateProgressTool()`，并通过 `Config.PlansDir` 明确提供计划目录；可通过 `Config.Mode` 选择初始模式。自定义工具只有标记 `ReadOnly: true` 才能在规划模式执行，这个标记的真实性由工具实现方负责。
 
 SDK 默认使用程序中打包的规划模板，不自动读取项目文件。传入 `Config.PlanTemplatePath` 可显式指定可编辑的模板文件，并启用缺失时创建及每次请求重新读取的行为；该路径与保存任务计划的 `PlansDir` 分别配置。
+
+SDK 可注册 `iota.NewSearchHistoryTool()` 与 `iota.NewReadHistoryTool()`。`session.Run` 或 `session.Restore` 绑定它们的数据来源；读取仅限该 session，不接受任意文件路径。
 
 `agent.Collaboration()` 返回模式、计划及进度的独立副本。无会话保存时用 `agent.SetMode(mode, emit)` 切换模式，`agent.ApprovePlan(emit)` 批准计划；启用保存时对应调用 `session.SetMode(agent, mode, emit)` 和 `session.ApprovePlan(agent, emit)`。批准 API 只读取计划并切换模式，不自动运行模型；调用方随后用 `session.Run` 提交执行请求。
 

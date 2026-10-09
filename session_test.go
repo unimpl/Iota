@@ -60,8 +60,10 @@ func TestSessionRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := cloneMessages(append(agent.Messages(), Message{Role: RoleUser, Content: "follow up"}))
-	if !reflect.DeepEqual(nextProvider.requests[0].Messages, want) {
-		t.Fatalf("request=%+v, want %+v", nextProvider.requests[0].Messages, want)
+	got := nextProvider.requests[0].Messages
+	want[len(want)-1].Source = got[len(got)-2].Source
+	if !got[len(got)-1].RuntimeContext || !reflect.DeepEqual(got[:len(got)-1], want) {
+		t.Fatal("resumed request did not preserve history with a transient state suffix")
 	}
 	if err := resumed.Close(); err != nil {
 		t.Fatal(err)
