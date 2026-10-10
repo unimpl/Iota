@@ -17,18 +17,27 @@ type UserInputOption struct {
 type UserInputQuestion struct {
 	ID                  string            `json:"id"`
 	Question            string            `json:"question"`
-	Options             []UserInputOption `json:"options"`
-	RecommendedOptionID string            `json:"recommended_option_id"`
+	Options             []UserInputOption `json:"options,omitempty"`
+	RecommendedOptionID string            `json:"recommended_option_id,omitempty"`
 }
+
+type UserInputFormat string
+
+const (
+	UserInputStructured UserInputFormat = "structured"
+	UserInputFreeform   UserInputFormat = "freeform"
+)
 
 // UserInputRequest supplies questions and one-based progress within a model's tool batch.
 type UserInputRequest struct {
+	Format    UserInputFormat     `json:"format"`
 	Questions []UserInputQuestion `json:"questions"`
 	CallIndex int                 `json:"-"`
 	CallCount int                 `json:"-"`
 }
 
-// UserInputAnswer.Source is selected, recommended, custom, or cancelled.
+// UserInputAnswer.Source is selected, recommended, custom, unanswered, or cancelled.
+// Unanswered is an explicitly submitted empty freeform reply, not a skip or cancellation.
 // Option answers include both the stable option ID and its label as Value.
 type UserInputAnswer struct {
 	OptionID string `json:"option_id,omitempty"`
@@ -48,21 +57,50 @@ type UserInputHandler func(context.Context, UserInputRequest) (UserInputResponse
 // NewRequestUserInputTool declares interactive input; Config.UserInputHandler implements its UI.
 func NewRequestUserInputTool() Tool {
 	return Tool{Name: "request_user_input", ReadOnly: true, userInputTool: true,
-		Description: "Ask independent questions and wait for answers within this run. Prefer one to three questions. Each question requires 2-3 distinct feasible options, concrete tradeoffs, and a recommended_option_id. Users can choose an option or write a custom answer; empty input selects the recommendation. Cancellation ends the run. Dependent questions require a later call after receiving answers.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"questions":{"type":"array","minItems":1,"items":{"type":"object","properties":{"id":{"type":"string","minLength":1},"question":{"type":"string","minLength":1},"recommended_option_id":{"type":"string","minLength":1},"options":{"type":"array","minItems":2,"maxItems":3,"items":{"type":"object","properties":{"id":{"type":"string","minLength":1},"label":{"type":"string","minLength":1},"description":{"type":"string","minLength":1}},"required":["id","label","description"],"additionalProperties":false}}},"required":["id","question","options","recommended_option_id"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false}`),
+		Description: "Ask the user and wait for replies within this run, including task clarification, games, and conversation. Use structured format for collecting task information or choosing between plans: every question needs 2-3 distinct feasible options with concrete tradeoffs and a recommended_option_id; empty input selects the recommendation. Use freeform format for games, conversation, and open-ended questions: supply only id and question, without options or recommendations; empty input is returned as source=unanswered, meaning the user provided no answer, not a skip or agreement. Prefer one to three independent questions. Dependent questions require a later call after receiving answers. Cancellation ends the run.",
+		Schema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"format":{"type":"string","enum":["structured","freeform"],"description":"structured for task information and decisions; freeform for games, conversation, and open-ended replies."},
+				"questions":{"type":"array","minItems":1,"items":{
+					"type":"object",
+					"properties":{
+						"id":{"type":"string","minLength":1},
+						"question":{"type":"string","minLength":1},
+						"recommended_option_id":{"type":"string","minLength":1,"description":"Required only in structured format; omit in freeform format."},
+						"options":{"type":"array","minItems":2,"maxItems":3,"description":"Required only in structured format; omit in freeform format.","items":{
+							"type":"object",
+							"properties":{"id":{"type":"string","minLength":1},"label":{"type":"string","minLength":1},"description":{"type":"string","minLength":1}},
+							"required":["id","label","description"],"additionalProperties":false
+						}}
+					},
+					"required":["id","question"],"additionalProperties":false
+				}}
+			},
+			"required":["format","questions"],"additionalProperties":false
+		}`),
 	}
 }
 
-func validateUserInputQuestions(questions []UserInputQuestion) error {
-	if len(questions) == 0 {
+func validateUserInputRequest(request UserInputRequest) error {
+	if request.Format != UserInputStructured && request.Format != UserInputFreeform {
+		return errors.New("format must be structured or freeform")
+	}
+	if len(request.Questions) == 0 {
 		return errors.New("at least one question is required")
 	}
 	seen := make(map[string]bool)
-	for _, question := range questions {
+	for _, question := range request.Questions {
 		if strings.TrimSpace(question.ID) == "" || strings.TrimSpace(question.Question) == "" || seen[question.ID] {
 			return errors.New("question IDs must be non-empty and unique, and questions must be non-empty")
 		}
 		seen[question.ID] = true
+		if request.Format == UserInputFreeform {
+			if len(question.Options) != 0 || question.RecommendedOptionID != "" {
+				return fmt.Errorf("freeform question %q must omit options and recommendation", question.ID)
+			}
+			continue
+		}
 		if len(question.Options) < 2 || len(question.Options) > 3 {
 			return fmt.Errorf("question %q requires 2-3 options", question.ID)
 		}
@@ -85,7 +123,7 @@ func (a *Agent) executeUserInput(ctx context.Context, call ToolCall, callIndex, 
 	if err := json.Unmarshal(call.Arguments, &request); err != nil {
 		return err.Error(), true, nil
 	}
-	if err := validateUserInputQuestions(request.Questions); err != nil {
+	if err := validateUserInputRequest(request); err != nil {
 		return "invalid tool arguments: " + err.Error(), true, nil
 	}
 	request.CallIndex, request.CallCount = callIndex, callCount
@@ -115,9 +153,11 @@ func (a *Agent) executeUserInput(ctx context.Context, call ToolCall, callIndex, 
 			valid = answer.OptionID == "" && strings.TrimSpace(answer.Value) != ""
 		case "cancelled":
 			valid = response.Cancelled && answer.OptionID == "" && answer.Value == ""
+		case "unanswered":
+			valid = request.Format == UserInputFreeform && answer.OptionID == "" && answer.Value == ""
 		case "selected", "recommended":
 			for _, option := range question.Options {
-				if option.ID == answer.OptionID && (answer.Source != "recommended" || option.ID == question.RecommendedOptionID) {
+				if request.Format == UserInputStructured && option.ID == answer.OptionID && (answer.Source != "recommended" || option.ID == question.RecommendedOptionID) {
 					answer.Value = option.Label
 					response.Answers[question.ID] = answer
 					valid = true

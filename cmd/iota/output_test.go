@@ -91,3 +91,47 @@ func TestEventOutputMixedStreams(t *testing.T) {
 		})
 	}
 }
+
+func TestUserInputToolDoesNotDumpProtocolArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	printer := eventOutput{stdout: &stdout, stderr: &stderr, stdoutStyle: terminalStyle{terminal: true}}
+	printer.emit(iota.Event{Type: iota.EventTextDelta, Text: "Let's play."})
+	printer.emit(iota.Event{Type: iota.EventToolStart, ToolCall: &iota.ToolCall{ID: "game", Name: "request_user_input", Arguments: json.RawMessage(`{"format":"freeform","questions":[{"id":"game","question":"Which superpower?"}]}`)}})
+	if stdout.String() != "[assistant]\nLet's play.\n" || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q", &stdout, &stderr)
+	}
+	printer.emit(iota.Event{Type: iota.EventToolEnd, ToolCall: &iota.ToolCall{ID: "game", Name: "request_user_input"}, IsError: true, ToolResult: "invalid question"})
+	if !strings.Contains(stderr.String(), "invalid question") {
+		t.Fatal("input errors hidden")
+	}
+}
+
+func TestUserInputQuestionRenderingDistinguishesFormatsAndColors(t *testing.T) {
+	for _, colored := range []bool{false, true} {
+		for _, format := range []iota.UserInputFormat{iota.UserInputStructured, iota.UserInputFreeform} {
+			var output bytes.Buffer
+			question := iota.UserInputQuestion{ID: "game", Question: "Which superpower?\nExplain your choice."}
+			var options []iota.UserInputOption
+			if format == iota.UserInputStructured {
+				question = cliInputQuestion("storage")
+				options = []iota.UserInputOption{question.Options[1], question.Options[0]}
+			}
+			renderUserInputQuestion(&output, terminalStyle{terminal: true, colored: colored}, iota.UserInputRequest{Format: format, Questions: []iota.UserInputQuestion{question}, CallIndex: 2, CallCount: 3}, 0, options)
+			text := output.String()
+			plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(text, "")
+			if !strings.Contains(plain, "╭─ Assistant question") || !strings.Contains(plain, "Input 2/3 · Question 1/1") || !strings.Contains(plain, "Esc/Ctrl+C: cancel this run.") || strings.Contains(plain, "request_user_input") {
+				t.Fatalf("question UI=%q", plain)
+			}
+			if format == iota.UserInputFreeform {
+				if strings.Contains(plain, "recommended") || strings.Contains(plain, "1.") || !strings.Contains(plain, "Empty Enter means no answer provided") || !strings.Contains(plain, "│ Explain your choice.") {
+					t.Fatalf("freeform UI=%q", plain)
+				}
+			} else if !strings.Contains(plain, "1. 用户目录 (recommended)") || !strings.Contains(plain, "Enter: use 用户目录") || !strings.Contains(plain, "独立于工作目录") {
+				t.Fatalf("structured UI=%q", plain)
+			}
+			if colored != strings.Contains(text, "\x1b[") {
+				t.Fatalf("color=%t text=%q", colored, text)
+			}
+		}
+	}
+}

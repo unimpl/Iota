@@ -51,7 +51,6 @@ func (ui *userInputUI) handle(ctx context.Context, request iota.UserInputRequest
 			response.Cancelled = true
 			return response, err
 		}
-		fmt.Fprintf(ui.output, "\n[user input %d/%d · question %d/%d] %s\n", request.CallIndex, request.CallCount, index+1, len(request.Questions), question.Question)
 		options := make([]iota.UserInputOption, 0, len(question.Options))
 		for _, option := range question.Options {
 			if option.ID == question.RecommendedOptionID {
@@ -63,15 +62,9 @@ func (ui *userInputUI) handle(ctx context.Context, request iota.UserInputRequest
 				options = append(options, option)
 			}
 		}
-		for optionIndex, option := range options {
-			label := option.Label
-			if option.ID == question.RecommendedOptionID {
-				label += " (recommended)"
-			}
-			fmt.Fprintf(ui.output, "%d. %s — %s\n", optionIndex+1, label, option.Description)
-		}
-		fmt.Fprintf(ui.output, "Enter: use %s; number: select; text: custom answer; Esc/Ctrl+C: cancel this run.\n", options[0].Label)
-		ui.editor.SetPrompt(styleFor(ui.output).text(colorUserLabel, "[answer] > "))
+		style := styleFor(ui.output)
+		renderUserInputQuestion(ui.output, style, request, index, options)
+		ui.editor.SetPrompt(style.text(colorUserLabel, "[you:answer] > "))
 		line, err := ui.editor.Readline()
 		if ctx.Err() != nil {
 			err = ctx.Err()
@@ -81,19 +74,62 @@ func (ui *userInputUI) handle(ctx context.Context, request iota.UserInputRequest
 				err = context.Canceled
 			}
 			response.Cancelled = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+			message := "╰─ Input failed."
+			if response.Cancelled {
+				message = "╰─ Input cancelled; this run ends."
+			}
+			fmt.Fprintln(ui.output, style.text(colorThinking, message))
 			return response, err
 		}
-		line = strings.TrimSpace(line)
 		answer := iota.UserInputAnswer{Source: "custom", Value: line}
+		line = strings.TrimSpace(line)
+		if request.Format == iota.UserInputStructured {
+			answer.Value = line
+		}
 		if line == "" {
-			answer = iota.UserInputAnswer{Source: "recommended", OptionID: options[0].ID, Value: options[0].Label}
-		} else if number, err := strconv.Atoi(line); err == nil && number >= 1 && number <= len(options) {
+			answer = iota.UserInputAnswer{Source: "unanswered"}
+			if request.Format == iota.UserInputStructured {
+				answer = iota.UserInputAnswer{Source: "recommended", OptionID: options[0].ID, Value: options[0].Label}
+			}
+		} else if number, err := strconv.Atoi(line); request.Format == iota.UserInputStructured && err == nil && number >= 1 && number <= len(options) {
 			answer = iota.UserInputAnswer{Source: "selected", OptionID: options[number-1].ID, Value: options[number-1].Label}
 		}
 		response.Answers[question.ID] = answer
-		fmt.Fprintf(ui.output, "answer saved: %s\n", answer.Value)
+		message := "╰─ Reply recorded: " + answer.Value
+		if answer.Source == "unanswered" {
+			message = "╰─ No answer provided."
+		}
+		fmt.Fprintln(ui.output, style.text(colorUser, message))
 	}
 	return response, nil
+}
+
+func renderUserInputQuestion(output io.Writer, style terminalStyle, request iota.UserInputRequest, index int, options []iota.UserInputOption) {
+	question := request.Questions[index]
+	fmt.Fprintln(output, "\n"+style.text(colorReplyLabel, "╭─ Assistant question"))
+	fmt.Fprintln(output, style.text(colorThinking, fmt.Sprintf("│ Input %d/%d · Question %d/%d", request.CallIndex, request.CallCount, index+1, len(request.Questions))))
+	fmt.Fprintln(output, "│")
+	for _, line := range strings.Split(question.Question, "\n") {
+		fmt.Fprintln(output, "│ "+style.text(colorAssistant, line))
+	}
+	fmt.Fprintln(output, "│")
+	if request.Format == iota.UserInputStructured {
+		for optionIndex, option := range options {
+			label := option.Label
+			if option.ID == question.RecommendedOptionID {
+				label += " (recommended)"
+			}
+			fmt.Fprintf(output, "│ %s\n", style.text(colorAssistant, fmt.Sprintf("%d. %s", optionIndex+1, label)))
+			for _, line := range strings.Split(option.Description, "\n") {
+				fmt.Fprintln(output, "│    "+style.text(colorThinking, line))
+			}
+		}
+		fmt.Fprintln(output, "│")
+		fmt.Fprintln(output, style.text(colorThinking, "│ Enter: use "+options[0].Label+"; number: select; text: custom answer."))
+	} else {
+		fmt.Fprintln(output, style.text(colorThinking, "│ Write your reply. Empty Enter means no answer provided."))
+	}
+	fmt.Fprintln(output, style.text(colorThinking, "│ Esc/Ctrl+C: cancel this run."))
 }
 
 type inputByte struct {

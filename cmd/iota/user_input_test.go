@@ -41,7 +41,7 @@ func cliInputQuestion(id string) iota.UserInputQuestion {
 
 func cliInputCall(t *testing.T, id string, questions ...iota.UserInputQuestion) iota.ToolCall {
 	t.Helper()
-	args, err := json.Marshal(iota.UserInputRequest{Questions: questions})
+	args, err := json.Marshal(iota.UserInputRequest{Format: iota.UserInputStructured, Questions: questions})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestInteractiveUserInputRecommendationsCustomAndBatchProgress(t *testing.T)
 			if !strings.Contains(messages[3].Content, "自定义位置") || !strings.Contains(messages[3].Content, `"source":"custom"`) {
 				t.Fatalf("result=%s", messages[3].Content)
 			}
-			for _, want := range []string{"user input 1/2 · question 2/2", "user input 2/2 · question 1/1", "1. 用户目录 (recommended)", "Enter: use 用户目录"} {
+			for _, want := range []string{"Input 1/2 · Question 2/2", "Input 2/2 · Question 1/1", "Assistant question", "1. 用户目录 (recommended)", "Enter: use 用户目录"} {
 				if !strings.Contains(stderr.String(), want) {
 					t.Fatalf("missing %s: %s", want, &stderr)
 				}
@@ -123,12 +123,64 @@ func TestInteractiveUserInputCancellationReturnsToPrompt(t *testing.T) {
 			if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr, nil, ui); code != 0 {
 				t.Fatalf("code=%d stderr=%s", code, &stderr)
 			}
-			if len(provider.requests) != 2 || !strings.Contains(stderr.String(), "iota: canceled") || strings.Contains(stderr.String(), "user input 2/2") {
+			if len(provider.requests) != 2 || !strings.Contains(stderr.String(), "iota: canceled") || strings.Contains(stderr.String(), "Input 2/2") {
 				t.Fatalf("requests=%d stderr=%s", len(provider.requests), &stderr)
 			}
 			messages := agent.Messages()
 			if len(messages) != 6 || messages[4].Content != "continue" || !strings.Contains(messages[2].Content, `"source":"recommended"`) || !strings.Contains(messages[2].Content, `"source":"cancelled"`) {
 				t.Fatalf("messages=%+v", messages)
+			}
+		})
+	}
+}
+
+func TestInteractiveMixedInputFreeformEmptyMeansUnanswered(t *testing.T) {
+	for _, mode := range []iota.Mode{iota.ModePlan, iota.ModeDefault} {
+		t.Run(string(mode), func(t *testing.T) {
+			freeform := iota.ToolCall{ID: "game", Name: "request_user_input", Arguments: json.RawMessage(`{"format":"freeform","questions":[{"id":"superpower","question":"你想拥有什么超能力？"},{"id":"color","question":"你喜欢什么颜色？"}]}`)}
+			provider := &inputProvider{responses: []iota.Response{{ToolCalls: []iota.ToolCall{cliInputCall(t, "storage", cliInputQuestion("storage")), freeform}}, {Content: "done"}}}
+			ui := &userInputUI{}
+			agent, err := iota.New(iota.Config{Provider: provider, Model: "test", Mode: mode, Tools: []iota.Tool{iota.NewRequestUserInputTool()}, UserInputHandler: ui.handle})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stdin, err := os.CreateTemp(t.TempDir(), "input")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdin.Close()
+			if _, err := stdin.WriteString("go\n\n  \n 2 \n/exit\n"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stdin.Seek(0, 0); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr, nil, ui); code != 0 {
+				t.Fatalf("code=%d stderr=%s", code, &stderr)
+			}
+			if len(provider.requests) != 2 {
+				t.Fatalf("requests=%d", len(provider.requests))
+			}
+			messages := provider.requests[1].Messages
+			var response iota.UserInputResponse
+			if err := json.Unmarshal([]byte(messages[3].Content), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Cancelled || response.Answers["superpower"].Source != "unanswered" || response.Answers["superpower"].Value != "" || response.Answers["color"].Source != "custom" || response.Answers["color"].Value != " 2 " {
+				t.Fatalf("response=%+v", response)
+			}
+			if !strings.Contains(messages[2].Content, `"source":"recommended"`) {
+				t.Fatal("structured default changed")
+			}
+			freeformUI := strings.SplitN(stderr.String(), "你想拥有什么超能力？", 2)[1]
+			for _, want := range []string{"Empty Enter means no answer provided", "No answer provided.", "Input 2/2 · Question 2/2"} {
+				if !strings.Contains(freeformUI, want) {
+					t.Fatalf("missing %s: %s", want, freeformUI)
+				}
+			}
+			if strings.Contains(freeformUI, "recommended") || strings.Contains(stderr.String(), "recommended_option_id") || strings.Contains(stderr.String(), "[request_user_input]") {
+				t.Fatalf("protocol or choices leaked into freeform UI: %s", &stderr)
 			}
 		})
 	}

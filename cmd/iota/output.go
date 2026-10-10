@@ -151,6 +151,11 @@ func (o *eventOutput) emit(event iota.Event) {
 		}
 		fmt.Fprint(o.stdout, o.stdoutStyle.text(colorAssistant, event.Text))
 	case iota.EventToolStart:
+		// The input handler renders an assistant question and a dedicated reply prompt.
+		// Keep its protocol arguments in the session log, not in the terminal UI.
+		if event.ToolCall.Name == "request_user_input" {
+			break
+		}
 		arguments := string(event.ToolCall.Arguments)
 		if event.ToolCall.Name == "bash" {
 			var args struct {

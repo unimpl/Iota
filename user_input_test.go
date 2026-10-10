@@ -18,7 +18,7 @@ func inputQuestion(id string) UserInputQuestion {
 
 func inputCall(t *testing.T, id string, questions ...UserInputQuestion) ToolCall {
 	t.Helper()
-	args, err := json.Marshal(UserInputRequest{Questions: questions})
+	args, err := json.Marshal(UserInputRequest{Format: UserInputStructured, Questions: questions})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,6 +223,7 @@ func TestUserInputRejectsInvalidHandlerAnswersBeforeContinuing(t *testing.T) {
 		{Answers: map[string]UserInputAnswer{"one": {Source: "recommended", OptionID: "project"}}},
 		{Answers: map[string]UserInputAnswer{"one": {Source: "custom", Value: "  "}}},
 		{Answers: map[string]UserInputAnswer{"one": {Source: "selected", OptionID: "missing"}}},
+		{Answers: map[string]UserInputAnswer{"one": {Source: "unanswered"}}},
 		{Answers: map[string]UserInputAnswer{"one": {Source: "selected", OptionID: "user"}, "unknown": {Source: "custom", Value: "extra"}}},
 	} {
 		provider := &fakeProvider{responses: []Response{{ToolCalls: []ToolCall{inputCall(t, "call", inputQuestion("one")), inputCall(t, "next", inputQuestion("two"))}}}}
@@ -236,6 +237,93 @@ func TestUserInputRejectsInvalidHandlerAnswersBeforeContinuing(t *testing.T) {
 		}
 		if callbacks != 1 || len(provider.requests) != 1 || !agent.Messages()[2].IsError || len(agent.Messages()) != 4 {
 			t.Fatal("continued after invalid input response")
+		}
+	}
+}
+
+func TestUserInputFreeformRepliesAndUnansweredStayInOneRun(t *testing.T) {
+	for _, mode := range []Mode{ModePlan, ModeDefault} {
+		t.Run(string(mode), func(t *testing.T) {
+			args := json.RawMessage(`{"format":"freeform","questions":[{"id":"wish","question":"What superpower would you like?"},{"id":"why","question":"What is your favorite color?"}]}`)
+			provider := &fakeProvider{responses: []Response{
+				{ToolCalls: []ToolCall{{ID: "game", Name: "request_user_input", Arguments: args}}},
+				{Content: "Your second answer was empty."},
+			}}
+			config := Config{Provider: provider, Model: "test", Mode: mode, Tools: []Tool{NewRequestUserInputTool()}, UserInputHandler: func(ctx context.Context, request UserInputRequest) (UserInputResponse, error) {
+				if request.Format != UserInputFreeform || len(request.Questions[0].Options) != 0 || request.Questions[0].RecommendedOptionID != "" {
+					t.Fatalf("request=%+v", request)
+				}
+				return UserInputResponse{Answers: map[string]UserInputAnswer{
+					"wish": {Source: "custom", Value: "time travel"},
+					"why":  {Source: "unanswered"},
+				}}, nil
+			}}
+			agent, err := New(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := NewSession(t.TempDir(), SessionInfo{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := session.Run(t.Context(), agent, "Let's play a question game", nil)
+			if err != nil || result.Turns != 2 || len(provider.requests) != 2 {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if !strings.Contains(provider.requests[0].SystemPrompt, "including games and casual conversation") || !strings.Contains(provider.requests[0].SystemPrompt, "only this format requires") {
+				t.Fatal("missing scoped input instructions")
+			}
+			var response UserInputResponse
+			if err := json.Unmarshal([]byte(agent.Messages()[2].Content), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Cancelled || response.Answers["why"].Source != "unanswered" || response.Answers["why"].Value != "" || agent.Messages()[2].IsError {
+				t.Fatalf("response=%+v", response)
+			}
+			if err := session.Close(); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := OpenSession(session.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer restored.Close()
+			next, err := New(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := restored.Restore(next); err != nil {
+				t.Fatal(err)
+			}
+			if next.Messages()[2].Content != agent.Messages()[2].Content {
+				t.Fatal("unanswered reply lost on restore")
+			}
+		})
+	}
+}
+
+func TestUserInputFormatValidationBeforeUI(t *testing.T) {
+	for _, args := range []string{
+		`{"questions":[{"id":"one","question":"Why?"}]}`,
+		`{"format":"unknown","questions":[{"id":"one","question":"Why?"}]}`,
+		`{"format":"structured","questions":[{"id":"one","question":"Why?"}]}`,
+		`{"format":"freeform","questions":[{"id":"one","question":"Why?","recommended_option_id":"a"}]}`,
+		`{"format":"freeform","questions":[{"id":"one","question":"Why?","options":[{"id":"a","label":"A","description":"First"},{"id":"b","label":"B","description":"Second"}]}]}`,
+		`{"format":"freeform","questions":[{"id":"one","question":"Why?"},{"id":"one","question":"Again?"}]}`,
+	} {
+		provider := &fakeProvider{responses: []Response{{ToolCalls: []ToolCall{{ID: "question", Name: "request_user_input", Arguments: json.RawMessage(args)}}}, {Content: "corrected"}}}
+		agent, err := New(Config{Provider: provider, Model: "test", Tools: []Tool{NewRequestUserInputTool()}, UserInputHandler: func(context.Context, UserInputRequest) (UserInputResponse, error) {
+			t.Fatal("invalid format reached UI")
+			return UserInputResponse{}, nil
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := agent.Run(t.Context(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+		if !agent.Messages()[2].IsError {
+			t.Fatalf("invalid format accepted: %s", args)
 		}
 	}
 }
