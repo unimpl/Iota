@@ -30,6 +30,7 @@ type Agent struct {
 	keepRecentTurns    int
 	systemPromptLoader func(context.Context) (string, error)
 	contextLimitTokens int
+	userInputHandler   UserInputHandler
 
 	mu            sync.Mutex
 	running       bool
@@ -128,17 +129,33 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 			return result, nil
 		}
 
+		inputCalls := 0
+		for _, call := range response.ToolCalls {
+			if call.Name == "request_user_input" {
+				inputCalls++
+			}
+		}
+		inputIndex := 0
 		for index, call := range response.ToolCalls {
 			if err := ctx.Err(); err != nil {
 				return result, errors.Join(err, a.appendCancelledResults(response.ToolCalls[index:], turn, emit, record))
 			}
 			emitEvent(emit, Event{Type: EventToolStart, Turn: turn, ToolCall: cloneToolCallPointer(call)})
-			text, isError := a.executeTool(ctx, call, turn, emit, record)
+			if call.Name == "request_user_input" {
+				inputIndex++
+			}
+			text, isError, abortErr := a.executeTool(ctx, call, turn, emit, record, inputIndex, inputCalls)
 			toolMessage := Message{Role: RoleTool, Content: text, ToolCallID: call.ID, ToolName: call.Name, IsError: isError}
 			if err := a.appendMessage(toolMessage, turn, emit, record); err != nil {
 				return result, err
 			}
 			emitEvent(emit, Event{Type: EventToolEnd, Turn: turn, ToolCall: cloneToolCallPointer(call), ToolResult: text, IsError: isError})
+			if abortErr != nil {
+				if errors.Is(abortErr, context.Canceled) || errors.Is(abortErr, context.DeadlineExceeded) {
+					result.StopReason = "aborted"
+				}
+				return result, errors.Join(abortErr, a.appendCancelledResults(response.ToolCalls[index+1:], turn, emit, record))
+			}
 			if err := ctx.Err(); err != nil {
 				return result, errors.Join(err, a.appendCancelledResults(response.ToolCalls[index+1:], turn, emit, record))
 			}

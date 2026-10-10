@@ -415,7 +415,7 @@ func TestInteractiveResetAndExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr, nil); code != 0 {
+	if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr, nil, nil); code != 0 {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "conversation reset") {

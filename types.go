@@ -67,9 +67,10 @@ type Tool struct {
 	Schema      json.RawMessage
 	Execute     func(context.Context, json.RawMessage) (string, error)
 	// ReadOnly allows this tool during planning; the caller owns this guarantee.
-	ReadOnly    bool
-	planTool    bool
-	historyTool bool
+	ReadOnly      bool
+	planTool      bool
+	historyTool   bool
+	userInputTool bool
 }
 
 // Request 汇集单轮模型请求；Messages 应保持对话和工具结果的原始顺序。

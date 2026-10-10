@@ -109,7 +109,7 @@ func TestInteractivePlanningAndExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr, session); code != 0 {
+	if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr, session, nil); code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, &stderr)
 	}
 	if requests != 4 || agent.Mode() != iota.ModeDefault || agent.Collaboration().Progress == nil {

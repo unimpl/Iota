@@ -97,7 +97,7 @@ func TestPlanningOptionsAndCustomAnswerUseLoggedConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr, session); code != 0 {
+	if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr, session, nil); code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, &stderr)
 	}
 	if requests != 3 || agent.Mode() != iota.ModePlan || agent.Collaboration().Plan == nil || agent.Collaboration().Plan.Content != plan {

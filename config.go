@@ -31,6 +31,9 @@ type Config struct {
 	// SystemPromptLoader reloads authoritative instructions before every request.
 	// The CLI uses it for AGENTS.md; SDK callers can also inject skills here.
 	SystemPromptLoader func(context.Context) (string, error)
+	// UserInputHandler waits for interactive answers within the current Run.
+	// Without a handler, request_user_input is unavailable in every mode.
+	UserInputHandler UserInputHandler
 }
 
 // New 校验配置并预编译所有工具 schema，让无效工具在运行前失败。
@@ -83,7 +86,7 @@ func New(config Config) (*Agent, error) {
 		if _, ok := seen[tool.Name]; ok {
 			return nil, fmt.Errorf("duplicate tool name %q", tool.Name)
 		}
-		if tool.Execute == nil && !tool.planTool && !tool.historyTool {
+		if tool.Execute == nil && !tool.planTool && !tool.historyTool && !tool.userInputTool {
 			return nil, fmt.Errorf("tool %q has no execute function", tool.Name)
 		}
 		if tool.planTool && tool.Name == "save_plan" && config.PlansDir == "" {
@@ -122,6 +125,7 @@ func New(config Config) (*Agent, error) {
 		planTemplatePath:   config.PlanTemplatePath,
 		keepRecentTurns:    config.KeepRecentTurns,
 		systemPromptLoader: config.SystemPromptLoader,
+		userInputHandler:   config.UserInputHandler,
 		collaboration:      CollaborationState{Mode: config.Mode},
 	}, nil
 }

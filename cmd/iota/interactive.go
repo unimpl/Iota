@@ -13,15 +13,22 @@ import (
 
 // interactive 用行编辑器读取输入，按字符和显示宽度处理中文删除与光标移动。
 // 每次只读取一行，运行模型时恢复普通终端模式，以便继续响应中断信号。
-func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, stdout, stderr io.Writer, session *iota.Session) int {
-	input := readline.NewCancelableStdin(stdin)
+func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, stdout, stderr io.Writer, session *iota.Session, ui *userInputUI) int {
+	input := newQuestionInput(stdin)
 	config := inputConfig(stdin, stderr)
 	config.Stdin = input
+	// Save only task prompts, not questionnaire answers. Keep this setting fixed:
+	// readline's HistoryDisable/Enable mutate state without synchronization.
+	config.DisableAutoSaveHistory = ui != nil
 	editor, err := readline.NewEx(config)
 	if err != nil {
 		input.Close()
 		printLine(stderr, colorError, "iota: initialize input editor: "+err.Error())
 		return 1
+	}
+	if ui != nil {
+		ui.editor, ui.input, ui.output = editor, input, stderr
+		defer func() { ui.editor = nil }()
 	}
 	closed := false
 	closeEditor := func() {
@@ -59,6 +66,11 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 			if read.Error != nil {
 				printLine(stderr, colorError, "iota: "+read.Error.Error())
 				return 1
+			}
+			if config.DisableAutoSaveHistory {
+				if err := editor.SaveHistory(read.Line); err != nil {
+					printLine(stderr, colorError, "iota: save input history: "+err.Error())
+				}
 			}
 			line := strings.TrimSpace(read.Line)
 			switch line {

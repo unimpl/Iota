@@ -213,6 +213,9 @@ func (a *Agent) commitCollaboration(ctx context.Context, kind EventType, state C
 
 func (a *Agent) toolAllowed(tool Tool) bool {
 	mode := a.Mode()
+	if tool.userInputTool {
+		return a.userInputHandler != nil
+	}
 	if tool.historyTool {
 		a.mu.Lock()
 		available := a.history != nil
@@ -254,6 +257,20 @@ Use update_progress, when available, to maintain an execution checklist with at 
 	guidance += `
 The runtime-context block at the end of this request is the current state, not a new user request. Older checklist versions in history are historical evidence. In default mode, preserve program-assigned checklist and step IDs. Before working on a checklist step, mark it in_progress; verify completion before marking it completed. An in_progress step may have partially completed actions; inspect actual results before repeating an interrupted operation. Revise progress when new evidence requires it, and never mark unfinished work completed merely because a run ends.
 When an omitted detail affects the next decision, use search_history and read_history, when available, to inspect original records. Prefer the supplied seq ranges; do not invent missing decisions, file contents, or tool results.`
+	inputAvailable := false
+	for _, tool := range a.tools {
+		if tool.tool.userInputTool && a.toolAllowed(tool.tool) {
+			inputAvailable = true
+			break
+		}
+	}
+	if inputAvailable {
+		guidance += `
+User input is available through request_user_input in both plan and default modes. Use it for decisions requiring an answer rather than ending the run with a question. Supply two or three distinct feasible options with concrete tradeoffs and one recommended option for every question. Ask independent questions together; ask dependent questions only after receiving the earlier answers. Empty input explicitly selects the recommendation; it is not a separate approval of other actions. Cancellation ends the current run. Do not invent answers or interpret a cancelled input as agreement.`
+	} else {
+		guidance += `
+User input is unavailable in this run. Do not call request_user_input or ask questions awaiting a reply, even if earlier planning instructions suggest doing so. Proceed with available information; use reasonable defaults only when they preserve the user's intent, and state assumptions. If necessary information or authorization is missing, explain what is missing and why work cannot continue, then finish this run. Lack of an input channel is not acceptance of a recommendation or approval.`
+	}
 	base := a.systemPrompt
 	if a.systemPromptLoader != nil {
 		var err error

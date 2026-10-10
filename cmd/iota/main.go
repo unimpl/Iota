@@ -66,6 +66,12 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		return 2
 	}
 	plansDir := filepath.Join(home, ".iota", "plans")
+	terminal := isTerminal(stdin)
+	var inputHandler iota.UserInputHandler
+	ui := &userInputUI{}
+	if terminal && opts.prompt == "" {
+		inputHandler = ui.handle
+	}
 	agent, err := iota.New(iota.Config{
 		Provider:         provider,
 		Model:            opts.model,
@@ -76,6 +82,7 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		PlansDir:         plansDir,
 		PlanTemplatePath: filepath.Join(plansDir, "template.md"),
 		KeepRecentTurns:  opts.keepRecentTurns,
+		UserInputHandler: inputHandler,
 		SystemPromptLoader: func(ctx context.Context) (string, error) {
 			if err := ctx.Err(); err != nil {
 				return "", err
@@ -88,7 +95,6 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	terminal := isTerminal(stdin)
 	if opts.prompt != "" && !terminal {
 		printLine(stderr, colorError, "iota: -p cannot be combined with piped standard input")
 		return 2
@@ -151,5 +157,5 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		}
 		return execute(agent, string(data), signals, stdout, stderr, true, session)
 	}
-	return interactive(agent, signals, stdin, stdout, stderr, session)
+	return interactive(agent, signals, stdin, stdout, stderr, session, ui)
 }

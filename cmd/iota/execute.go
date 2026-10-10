@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -38,6 +39,13 @@ func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout,
 		return 0
 	case completed := <-done:
 		fmt.Fprintln(stdout)
+		if errors.Is(completed.err, context.Canceled) {
+			printLine(stderr, colorTool, "iota: canceled")
+			if single {
+				return 130
+			}
+			return 0
+		}
 		if completed.err != nil {
 			printLine(stderr, colorError, "iota: "+formatRunError(completed.err))
 			return 1

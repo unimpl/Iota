@@ -78,7 +78,7 @@ func TestInteractiveCompactFocusIsNotSubmittedAsUserPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr, nil); code != 0 {
+	if code := interactive(agent, make(chan os.Signal), stdin, &stdout, &stderr, nil, nil); code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 	if len(provider.requests) != 5 || !strings.Contains(provider.requests[4].Messages[0].Content, "保留路径 和未完成任务") || len(provider.requests[4].Tools) != 0 {

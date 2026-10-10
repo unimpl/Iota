@@ -88,7 +88,8 @@ func validateToolCalls(calls []ToolCall) error {
 
 // executeTool 校验参数后执行指定工具，并将失败转成模型可见的错误文本。
 // 返回的布尔值表示工具错误，不表示整个 Agent 运行失败。
-func (a *Agent) executeTool(ctx context.Context, call ToolCall, turn int, emit EmitFunc, record func(Event) error) (string, bool) {
+// 非空 error 要求 Run 在保存当前结果后停止，例如用户取消输入或输入界面失败。
+func (a *Agent) executeTool(ctx context.Context, call ToolCall, turn int, emit EmitFunc, record func(Event) error, inputIndex, inputCount int) (string, bool, error) {
 	var selected *compiledTool
 	for i := range a.tools {
 		if a.tools[i].tool.Name == call.Name {
@@ -97,40 +98,46 @@ func (a *Agent) executeTool(ctx context.Context, call ToolCall, turn int, emit E
 		}
 	}
 	if selected == nil {
-		return fmt.Sprintf("tool %q not found", call.Name), true
+		return fmt.Sprintf("tool %q not found", call.Name), true, nil
 	}
 	var args any
 	decoder := json.NewDecoder(bytes.NewReader(call.Arguments))
 	decoder.UseNumber()
 	if err := decoder.Decode(&args); err != nil {
-		return "invalid tool arguments: " + err.Error(), true
+		return "invalid tool arguments: " + err.Error(), true, nil
 	}
 	if err := selected.schema.Validate(args); err != nil {
-		return "invalid tool arguments: " + err.Error(), true
+		return "invalid tool arguments: " + err.Error(), true, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return err.Error(), true
+		return err.Error(), true, nil
 	}
 	if !a.toolAllowed(selected.tool) {
-		return fmt.Sprintf("tool %q is unavailable in %s mode", call.Name, a.Mode()), true
+		if selected.tool.userInputTool {
+			return "request_user_input is unavailable without a user input handler", true, nil
+		}
+		return fmt.Sprintf("tool %q is unavailable in %s mode", call.Name, a.Mode()), true, nil
+	}
+	if selected.tool.userInputTool {
+		return a.executeUserInput(ctx, call, inputIndex, inputCount)
 	}
 	if selected.tool.planTool {
 		text, err := a.executePlanTool(ctx, call, turn, emit, record)
 		if err != nil {
-			return err.Error(), true
+			return err.Error(), true, nil
 		}
-		return text, false
+		return text, false, nil
 	}
 	if selected.tool.historyTool {
 		text, err := a.executeHistoryTool(ctx, call)
 		if err != nil {
-			return err.Error(), true
+			return err.Error(), true, nil
 		}
-		return text, false
+		return text, false, nil
 	}
 	text, err := selected.tool.Execute(ctx, call.Arguments)
 	if err != nil {
-		return err.Error(), true
+		return err.Error(), true, nil
 	}
-	return text, false
+	return text, false, nil
 }
