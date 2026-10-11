@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -33,9 +34,22 @@ func (p *compactionProvider) Stream(ctx context.Context, request Request, _ func
 			if err := json.Unmarshal([]byte(mapping), &inputs); err != nil {
 				return Response{}, err
 			}
-			result := batchOutput{}
-			for _, input := range inputs {
-				result.Turns = append(result.Turns, turnOutput{ID: input.ID, Text: response.Content})
+			result := structuredOutput{}
+			_, rest, _ := strings.Cut(request.Messages[0].Content, "<previous-summary>\n")
+			prior, _, _ := strings.Cut(rest, "\n</previous-summary>")
+			var entries []SummaryEntry
+			if err := json.Unmarshal([]byte(prior), &entries); err != nil {
+				return Response{}, err
+			}
+			for _, entry := range entries {
+				result.Entries = append(result.Entries, entryOutput{ID: entry.ID, Section: entry.Section, Text: entry.Text, Status: entry.Status, Refs: []string{"summary:" + entry.ID}, Reason: entry.Reason})
+			}
+			if len(inputs) > 0 {
+				refs := make([]string, len(inputs))
+				for i, input := range inputs {
+					refs[i] = "turn:" + input.ID
+				}
+				result.Entries = append(result.Entries, entryOutput{ID: "context-" + fmt.Sprint(len(entries)), Section: "context", Text: response.Content, Status: "active", Refs: refs})
 			}
 			body, err := json.Marshal(result)
 			if err != nil {
@@ -43,23 +57,6 @@ func (p *compactionProvider) Stream(ctx context.Context, request Request, _ func
 			}
 			response.Content = string(body)
 			return response, nil
-		}
-		_, remaining, present := strings.Cut(request.Messages[0].Content, "<source-map>\n")
-		if present {
-			mapping, _, _ := strings.Cut(remaining, "\n</source-map>")
-			var targets []summarySource
-			if err := json.Unmarshal([]byte(mapping), &targets); err != nil {
-				return Response{}, err
-			}
-			result := summaryResult{Summary: response.Content}
-			for _, target := range targets {
-				result.Sources = append(result.Sources, summaryDescription{ID: target.ID, Description: "Recorded history for " + target.ID})
-			}
-			body, err := json.Marshal(result)
-			if err != nil {
-				return Response{}, err
-			}
-			response.Content = string(body)
 		}
 	}
 	return response, err
@@ -129,8 +126,17 @@ func TestCompactFocusSummaryAndRepeatedCompaction(t *testing.T) {
 	if _, err := agent.Compact(context.Background(), "carry prior decisions", nil); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(agent.Messages()[0].Content, state.Memory.Ordinary[0].Text) {
-		t.Fatal("previous ordinary summary was replaced during a later compaction")
+	if !strings.Contains(agent.Messages()[0].Content, state.Memory.Entries[0].Text) {
+		t.Fatal("previous structured state was replaced during a later compaction")
+	}
+	count := 0
+	for _, message := range agent.Messages() {
+		if message.ContextSummary {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected one active checkpoint after repeated compaction, got %d", count)
 	}
 }
 
@@ -180,7 +186,7 @@ func TestCompactionFailurePreservesHistory(t *testing.T) {
 				case "empty":
 					return Response{StopReason: "stop"}, nil
 				case "oversized":
-					return Response{Content: strings.Repeat("x", summaryMaxChars+1), StopReason: "stop"}, nil
+					return Response{Content: strings.Repeat("x", 80000), StopReason: "stop"}, nil
 				case "error":
 					return Response{}, errors.New("network unavailable")
 				case "cancel":

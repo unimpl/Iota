@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestCompactionUnitsKeepBatchesTogetherAcrossStepTransitions(t *testing.T) {
+func TestTurnSourcesKeepBatchesTogetherAcrossStepTransitions(t *testing.T) {
 	messages := []Message{
 		{Role: RoleUser, Content: "task", Source: &MessageSource{Seq: 2, RunID: "a"}},
 		{Role: RoleAssistant, Source: &MessageSource{Seq: 3, RunID: "a", StepID: "one"}, ToolCalls: []ToolCall{{ID: "read", Name: "read", Arguments: json.RawMessage(`{}`)}, {ID: "progress", Name: "update_progress", Arguments: json.RawMessage(`{}`)}}},
@@ -19,8 +19,8 @@ func TestCompactionUnitsKeepBatchesTogetherAcrossStepTransitions(t *testing.T) {
 		{Role: RoleUser, Content: "continue", Source: &MessageSource{Seq: 9, RunID: "b", StepID: "two"}},
 		{Role: RoleAssistant, Content: "continued", Source: &MessageSource{Seq: 10, RunID: "b", StepID: "two"}},
 	}
-	units := compactionUnits(messages, summaryInputTokens)
-	if len(units) != 4 || units[1].StepID != "one" || len(units[1].Messages) != 3 || units[3].RunID != "b" {
+	units := turnSourceUnits(messages)
+	if len(units) != 3 || len(units[0].Messages) != 4 || units[1].StepID != "two" || units[2].RunID != "b" {
 		t.Fatalf("incorrect run/step units: %+v", units)
 	}
 	for _, unit := range units {
@@ -87,21 +87,22 @@ func TestOversizedAtomicSummaryBlockUsesValidExcerptsAndOriginalSources(t *testi
 			return Response{}, errors.New("context_length_exceeded")
 		}
 		text := request.Messages[0].Content
-		piece := strings.SplitN(strings.SplitN(text, "<conversation>\n", 2)[1], "\n</conversation>", 2)[0]
-		var input []Message
-		if err := json.Unmarshal([]byte(piece), &input); err != nil {
+		piece := strings.SplitN(strings.SplitN(text, "<turns>\n", 2)[1], "\n</turns>", 2)[0]
+		var turns []turnInput
+		if err := json.Unmarshal([]byte(piece), &turns); err != nil {
 			t.Fatal(err)
 		}
+		input := turns[0].Messages
 		if pending, err := pendingSessionCalls(input); err != nil || len(pending) != 0 {
 			t.Fatal("atomic batch was split")
 		}
-		if !strings.Contains(text, "seq 20-21") || !strings.Contains(input[1].Content, "read_history") {
+		if turns[0].Sources[0].StartSeq != 20 || !turns[0].Incomplete || !strings.Contains(input[1].Content, "read_history") {
 			t.Fatal("excerpt lost original source references")
 		}
 		return Response{Content: "Large result excerpt only; retrieve original seq 20-21 before relying on omitted details.", StopReason: "stop"}, nil
 	}}
 	agent, _ := New(Config{Provider: provider, Model: "test"})
-	if _, err := agent.summarize(t.Context(), messages, "", 1, nil); err != nil {
+	if _, err := agent.summarizeTurns(t.Context(), messages, CompactionMemory{}, "", 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(messages[1].Content, strings.Repeat("中间细节", 10000)) {

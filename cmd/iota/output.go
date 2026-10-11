@@ -118,7 +118,7 @@ func (o *eventOutput) emit(event iota.Event) {
 				fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "candidate full context (not applied): "+formatContextUsage(state.AfterUsage, state.ContextLimitTokens)))
 			}
 		} else if state := event.Compaction; state != nil {
-			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("context compacted (%s): %d → %d characters; protected %d recent model turns (%d estimated tokens); evicted %d ordinary summaries", state.Stage, state.BeforeChars, state.AfterChars, state.KeptTurns, state.KeptTokens, state.EvictedSummaries)))
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("context compacted (%s): %d → %d characters; protected %d recent model turns (%d estimated tokens)", state.Stage, state.BeforeChars, state.AfterChars, state.KeptTurns, state.KeptTokens)))
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "context before: "+formatContextUsage(state.BeforeUsage, state.ContextLimitTokens)))
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "context after: "+formatContextUsage(state.AfterUsage, state.ContextLimitTokens)))
 			if state.TargetTokens > 0 && state.AfterUsage.Tokens > state.TargetTokens {
@@ -137,11 +137,8 @@ func (o *eventOutput) emit(event iota.Event) {
 			if progress.TargetTokens > 0 {
 				message += fmt.Sprintf("; target %d, current approximately %d tokens", progress.TargetTokens, progress.CurrentTokens)
 			}
-			if progress.Evicted > 0 {
-				message += fmt.Sprintf("; evicted %d ordinary summaries", progress.Evicted)
-			}
-			if progress.ImportantEntries > 0 {
-				message += fmt.Sprintf("; %d important-state entries", progress.ImportantEntries)
+			if progress.Entries > 0 {
+				message += fmt.Sprintf("; %d structured entries", progress.Entries)
 			}
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, message))
 		}

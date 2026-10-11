@@ -26,23 +26,19 @@ func (p *cliCompactProvider) Stream(_ context.Context, request iota.Request, _ f
 		if err := json.Unmarshal([]byte(mapping), &inputs); err != nil {
 			return iota.Response{}, err
 		}
-		var entries []struct {
-			ID   string `json:"id"`
-			Text string `json:"text"`
+		refs := make([]string, len(inputs))
+		for i, input := range inputs {
+			refs[i] = "turn:" + input.ID
 		}
-		for _, input := range inputs {
-			entries = append(entries, struct {
-				ID   string `json:"id"`
-				Text string `json:"text"`
-			}{input.ID, "checkpoint"})
+		type summaryEntry struct {
+			iota.SummaryEntry
+			Refs []string `json:"refs"`
 		}
 		data, err := json.Marshal(struct {
-			Turns []struct {
-				ID   string `json:"id"`
-				Text string `json:"text"`
-			} `json:"turns"`
-			Important []string `json:"important"`
-		}{entries, []string{}})
+			Entries []summaryEntry `json:"entries"`
+		}{
+			[]summaryEntry{{SummaryEntry: iota.SummaryEntry{ID: "context", Section: "context", Text: "checkpoint", Status: "active"}, Refs: refs}},
+		})
 		if err != nil {
 			return iota.Response{}, err
 		}

@@ -10,40 +10,15 @@ import (
 	"testing"
 )
 
-func TestSummaryDescriptionsBindOnlyToProgramAssignedSources(t *testing.T) {
-	sources := []SourceRange{
-		{StartSeq: 4, EndSeq: 23, RunID: "planning"},
-		{StartSeq: 34, EndSeq: 42, RunID: "execution", StepID: "migration"},
-	}
-	targets := undescribedSources(sources)
-	// Return IDs out of order to prove binding uses identity, not array order.
-	text := `{"summary":"Continue migration verification.","sources":[{"id":"s1","description":"inspect_cache: migration batch size, field mapping and conflict rules; verification pending."},{"id":"s0","description":"Cache location options, the user's choice of project directory, and saved plan."}]}`
-	checkpoint, err := bindSummarySources(text, sources, targets)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if checkpoint.Sources[0].StartSeq != 4 || checkpoint.Sources[1].EndSeq != 42 || !strings.Contains(checkpoint.Sources[0].Description, "user's choice") || !strings.Contains(checkpoint.Sources[1].Description, "inspect_cache") {
-		t.Fatalf("description attached to the wrong source: %+v", checkpoint.Sources)
-	}
-	if sources[0].Description != "" || sources[1].Description != "" {
-		t.Fatal("binding mutated the input metadata")
-	}
-	if !strings.Contains(sourceIndex(checkpoint.Sources), "description=") {
-		t.Fatal("descriptions were not made visible to the model")
-	}
-}
-
-func TestInvalidIndexedSummaryPreservesHistory(t *testing.T) {
+func TestInvalidStructuredSummaryPreservesHistory(t *testing.T) {
 	for name, content := range map[string]string{
-		"not_json":              `plain summary`,
-		"missing":               `{"summary":"checkpoint","sources":[]}`,
-		"unknown_id":            `{"summary":"checkpoint","sources":[{"id":"invented","description":"cache"}]}`,
-		"duplicate_id":          `{"summary":"checkpoint","sources":[{"id":"s0","description":"one"},{"id":"s0","description":"two"}]}`,
-		"blank_description":     `{"summary":"checkpoint","sources":[{"id":"s0","description":" "}]}`,
-		"invented_address":      `{"summary":"checkpoint","sources":[{"id":"s0","description":"cache","start_seq":999}]}`,
-		"trailing_data":         `{"summary":"checkpoint","sources":[{"id":"s0","description":"cache"}]} {}`,
-		"empty_summary":         `{"summary":"","sources":[{"id":"s0","description":"cache"}]}`,
-		"oversized_description": fmt.Sprintf(`{"summary":"checkpoint","sources":[{"id":"s0","description":%q}]}`, strings.Repeat("x", sourceDescriptionMaxChars+1)),
+		"not_json":         `plain summary`,
+		"missing":          `{"entries":[]}`,
+		"unknown_ref":      `{"entries":[{"id":"cache","section":"context","text":"cache","status":"active","refs":["turn:invented"]}]}`,
+		"duplicate_id":     `{"entries":[{"id":"cache","section":"context","text":"one","status":"active","refs":["turn:t0"]},{"id":"cache","section":"context","text":"two","status":"active","refs":["turn:t1"]}]}`,
+		"blank_text":       `{"entries":[{"id":"cache","section":"context","text":" ","status":"active","refs":["turn:t0"]}]}`,
+		"invented_address": `{"entries":[{"id":"cache","section":"context","text":"cache","status":"active","refs":["turn:t0"],"start_seq":999}]}`,
+		"trailing_data":    `{"entries":[{"id":"cache","section":"context","text":"cache","status":"active","refs":["turn:t0"]}]} {}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			provider := &compactionProvider{rawSummary: true, respond: func(context.Context, Request, int) (Response, error) {
@@ -52,10 +27,10 @@ func TestInvalidIndexedSummaryPreservesHistory(t *testing.T) {
 			session, agent := snapshotSession(t, provider)
 			before := agent.Messages()
 			if _, err := session.Compact(t.Context(), agent, "focus", nil); err == nil {
-				t.Fatal("invalid indexed response was accepted")
+				t.Fatal("invalid response was accepted")
 			}
 			if !reflect.DeepEqual(agent.Messages(), before) || !reflect.DeepEqual(session.messages, before) {
-				t.Fatal("invalid metadata replaced the active history")
+				t.Fatal("invalid metadata replaced active history")
 			}
 		})
 	}
@@ -73,10 +48,21 @@ func TestDescribedSourcesSurviveRepeatedCompactionAndHistoryLookup(t *testing.T)
 		if err := json.Unmarshal([]byte(mapping), &targets); err != nil {
 			t.Fatal(err)
 		}
-		result := batchOutput{}
-		for _, target := range targets {
-			result.Turns = append(result.Turns, turnOutput{ID: target.ID, Text: description})
+		result := structuredOutput{}
+		_, rest, _ = strings.Cut(request.Messages[0].Content, "<previous-summary>\n")
+		prior, _, _ := strings.Cut(rest, "\n</previous-summary>")
+		var previous []SummaryEntry
+		if err := json.Unmarshal([]byte(prior), &previous); err != nil {
+			t.Fatal(err)
 		}
+		for _, entry := range previous {
+			result.Entries = append(result.Entries, entryOutput{ID: entry.ID, Section: entry.Section, Text: entry.Text, Status: entry.Status, Refs: []string{"summary:" + entry.ID}})
+		}
+		refs := make([]string, len(targets))
+		for i, target := range targets {
+			refs[i] = "turn:" + target.ID
+		}
+		result.Entries = append(result.Entries, entryOutput{ID: fmt.Sprintf("lookup-%d", len(previous)), Section: "context", Text: description, Status: "active", Refs: refs})
 		data, err := json.Marshal(result)
 		if err != nil {
 			t.Fatal(err)

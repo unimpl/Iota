@@ -62,14 +62,19 @@ func TestAgentRecoversFromHTTPAndStreamCapacityErrors(t *testing.T) {
 						t.Error(err)
 						return
 					}
-					var turns []map[string]string
-					for _, input := range inputs {
-						turns = append(turns, map[string]string{"id": input.ID, "text": "checkpoint or answer"})
+					refs := make([]string, len(inputs))
+					for i, input := range inputs {
+						refs[i] = "turn:" + input.ID
+					}
+					type summaryEntry struct {
+						iota.SummaryEntry
+						Refs []string `json:"refs"`
 					}
 					data, _ := json.Marshal(struct {
-						Turns     []map[string]string `json:"turns"`
-						Important []string            `json:"important"`
-					}{turns, []string{}})
+						Entries []summaryEntry `json:"entries"`
+					}{
+						[]summaryEntry{{SummaryEntry: iota.SummaryEntry{ID: "context", Section: "context", Text: "checkpoint or answer", Status: "active"}, Refs: refs}},
+					})
 					content = string(data)
 					break
 				}
@@ -92,7 +97,7 @@ func TestAgentRecoversFromHTTPAndStreamCapacityErrors(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if len(requests) != 7 || !strings.Contains(requests[5].Messages[0].Content, "Summarize historical model turns") || len(requests[5].Tools) != 0 || !strings.Contains(requests[6].Messages[0].Content, "project instructions") || !strings.Contains(requests[6].Messages[1].Content, "<ordinary-history>") {
+			if len(requests) != 7 || !strings.Contains(requests[5].Messages[0].Content, "Summarize historical model turns") || len(requests[5].Tools) != 0 || !strings.Contains(requests[6].Messages[0].Content, "project instructions") || !strings.Contains(requests[6].Messages[1].Content, "<structured-summary>") {
 				t.Fatalf("incorrect recovery request sequence: %d calls", len(requests))
 			}
 		})

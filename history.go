@@ -34,7 +34,7 @@ type historyItem struct {
 
 type historyPage struct {
 	Records        []historyItem     `json:"records"`
-	SummaryMatches []OrdinarySummary `json:"summary_matches,omitempty"`
+	SummaryMatches []ArchivedSummary `json:"summary_matches,omitempty"`
 	MoreSummaries  bool              `json:"more_summaries,omitempty"`
 	ResetSeq       uint64            `json:"reset_seq,omitempty"`
 	NextSeq        uint64            `json:"next_seq,omitempty"`
@@ -43,7 +43,7 @@ type historyPage struct {
 
 func NewSearchHistoryTool() Tool {
 	return Tool{Name: "search_history", ReadOnly: true, historyTool: true,
-		Description: "Search original messages and archived ordinary summaries in this session with a literal, case-insensitive query. Returns snippets and original source seq/run/step IDs. Defaults to records after the latest reset. Continue raw records with start_seq=next_seq. Archived summary matches include their source ranges. Does not search request copies or stream deltas.",
+		Description: "Search original messages and archived summary details in this session with a literal, case-insensitive query. Returns snippets and original source seq/run/step IDs. Defaults to records after the latest reset. Continue raw records with start_seq=next_seq. Archived summary matches include their source ranges. Does not search request copies or stream deltas.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":1000},"start_seq":{"type":"integer","minimum":1},"end_seq":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":50},"run_id":{"type":"string"},"step_id":{"type":"string"},"include_before_reset":{"type":"boolean"}},"required":["query"],"additionalProperties":false}`)}
 }
 

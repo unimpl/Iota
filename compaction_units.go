@@ -6,31 +6,13 @@ import (
 	"strings"
 )
 
-// Unit boundaries are preferences; budgets and complete tool batches take precedence.
-const summaryInputTokens = 12000
-const summaryMaxChars = 8000
-
 type CompactionUnit struct {
+	ID           string        `json:"id"`
 	RunID        string        `json:"run_id,omitempty"`
 	StepID       string        `json:"step_id,omitempty"`
 	Sources      []SourceRange `json:"sources,omitempty"`
 	MessageCount int           `json:"message_count"`
 	Messages     []Message     `json:"-"`
-}
-
-// messageBlocks never separates an assistant call batch from any of its results.
-func messageBlocks(messages []Message) [][]Message {
-	var blocks [][]Message
-	for i := 0; i < len(messages); {
-		end := i + 1
-		if messages[i].Role == RoleAssistant {
-			end += len(messages[i].ToolCalls)
-		}
-		end = min(end, len(messages))
-		blocks = append(blocks, cloneMessages(messages[i:end]))
-		i = end
-	}
-	return blocks
 }
 
 func sourceRanges(messages []Message) []SourceRange {
@@ -56,35 +38,11 @@ func sourceRanges(messages []Message) []SourceRange {
 	return ranges
 }
 
-func compactionUnits(messages []Message, budget int) []CompactionUnit {
-	var units []CompactionUnit
-	for _, block := range messageBlocks(messages) {
-		runID, stepID := "", ""
-		if block[0].Source != nil {
-			runID, stepID = block[0].Source.RunID, block[0].Source.StepID
-		}
-		merge := len(units) > 0 && block[0].Role != RoleUser
-		if merge {
-			previous := &units[len(units)-1]
-			data, _ := json.Marshal(append(cloneMessages(previous.Messages), block...))
-			merge = previous.RunID == runID && previous.StepID == stepID && estimateTextTokens(string(data)) <= budget
-		}
-		if merge {
-			previous := &units[len(units)-1]
-			previous.Messages = append(previous.Messages, block...)
-			previous.MessageCount = len(previous.Messages)
-			previous.Sources = sourceRanges(previous.Messages)
-		} else {
-			units = append(units, CompactionUnit{RunID: runID, StepID: stepID, Messages: block, MessageCount: len(block), Sources: sourceRanges(block)})
-		}
-	}
-	return units
-}
-
 type modelTurn struct {
 	Start, End int
 	Messages   []Message
 	Sources    []SourceRange
+	Incomplete bool
 }
 
 // A model turn contains one assistant response and its complete tool batch.
