@@ -12,7 +12,7 @@ import (
 )
 
 // DefaultMaxTurns 限制单次运行的模型往返次数，避免工具循环无限持续。
-const DefaultMaxTurns = 20
+const DefaultMaxTurns = 100
 
 // Config 配置 Agent 的模型、工具和单次运行上限；MaxTurns 为零时使用默认值。
 type Config struct {

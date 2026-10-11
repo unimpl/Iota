@@ -31,7 +31,7 @@ cwd = "."
 system = "回答前先读取相关文件。"
 tools = ["read", "list", "write", "edit", "bash", "save_plan", "update_progress", "search_history", "read_history", "request_user_input"]
 mode = "default" # plan 表示先探索和编写计划
-max_turns = 20
+max_turns = 100
 timeout = "2m"
 save_session = true # false 表示只保留内存对话
 compaction_keep_recent_turns = 3 # 压缩时保留最近几轮完整原文
@@ -151,7 +151,7 @@ go run ./cmd/iota-view --folder /path/to/sessions
 --base-url    OpenAI-compatible API 根地址
 --cwd         工具工作目录
 --system      附加系统提示
---max-turns   每次运行最多模型轮数，默认 20
+--max-turns   每次运行最多模型轮数，默认 100
 --timeout     每次模型请求及 bash 命令的默认超时，默认 2m
 --tools       read,list,write,edit,bash,save_plan,update_progress,search_history,read_history,request_user_input 的逗号列表；none 表示禁用
 --mode        default 或 plan
