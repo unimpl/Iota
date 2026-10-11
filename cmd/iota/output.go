@@ -86,7 +86,7 @@ func (o *eventOutput) emit(event iota.Event) {
 			break
 		}
 		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("selected old history: %d user turns, %d messages, %d characters, approximately %d tokens", input.UserTurns, len(input.Messages), input.Chars, input.Usage.Tokens)))
-		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("protected recent history: %d user turns, %d messages; system instructions and tool definitions stay separate", input.KeptTurns, input.KeptMessages)))
+		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("protected recent history: %d model turns, %d messages, approximately %d tokens; system instructions and tool definitions stay separate", input.KeptTurns, input.KeptMessages, input.KeptTokens)))
 		if input.HasPreviousSummary {
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "selected history also includes the previous checkpoint summary"))
 		}
@@ -118,12 +118,32 @@ func (o *eventOutput) emit(event iota.Event) {
 				fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "candidate full context (not applied): "+formatContextUsage(state.AfterUsage, state.ContextLimitTokens)))
 			}
 		} else if state := event.Compaction; state != nil {
-			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("context compacted (%s): %d → %d characters; kept %d recent turns", state.Stage, state.BeforeChars, state.AfterChars, state.KeptTurns)))
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("context compacted (%s): %d → %d characters; protected %d recent model turns (%d estimated tokens); evicted %d ordinary summaries", state.Stage, state.BeforeChars, state.AfterChars, state.KeptTurns, state.KeptTokens, state.EvictedSummaries)))
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "context before: "+formatContextUsage(state.BeforeUsage, state.ContextLimitTokens)))
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "context after: "+formatContextUsage(state.AfterUsage, state.ContextLimitTokens)))
+			if state.TargetTokens > 0 && state.AfterUsage.Tokens > state.TargetTokens {
+				fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, fmt.Sprintf("target not reached: approximately %d tokens remain; target %d", state.AfterUsage.Tokens, state.TargetTokens)))
+			}
 			if state.SummaryPath != "" {
 				fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "summary: "+state.SummaryPath))
 			}
+		}
+	case iota.EventCompactionProgress:
+		if progress := event.CompactionProgress; progress != nil {
+			message := fmt.Sprintf("compaction %s: %d/%d model turns", progress.Stage, progress.ProcessedTurns, progress.TotalTurns)
+			if progress.Batch > 0 {
+				message += fmt.Sprintf("; batch %d/%d", progress.Batch, progress.Batches)
+			}
+			if progress.TargetTokens > 0 {
+				message += fmt.Sprintf("; target %d, current approximately %d tokens", progress.TargetTokens, progress.CurrentTokens)
+			}
+			if progress.Evicted > 0 {
+				message += fmt.Sprintf("; evicted %d ordinary summaries", progress.Evicted)
+			}
+			if progress.ImportantEntries > 0 {
+				message += fmt.Sprintf("; %d important-state entries", progress.ImportantEntries)
+			}
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, message))
 		}
 	case iota.EventModeChanged:
 		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "mode: "+string(event.Collaboration.Mode)))

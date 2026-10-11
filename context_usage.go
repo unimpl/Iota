@@ -14,7 +14,7 @@ type ContextUsage struct {
 }
 
 func estimateContextUsage(request Request, limit int) ContextUsage {
-	data, _ := json.Marshal(request)
+	data, _ := json.Marshal(modelVisibleRequest(request))
 	usage := ContextUsage{Tokens: estimateTextTokens(string(data)), Estimated: true}
 	return withContextLimit(usage, limit)
 }

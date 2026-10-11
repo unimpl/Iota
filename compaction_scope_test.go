@@ -12,7 +12,7 @@ import (
 // A short oldest turn can grow when summarized; the protected three turns are not summary input.
 func TestCompactionScopeAndRejectedCandidateAreRecorded(t *testing.T) {
 	provider := &compactionProvider{respond: func(context.Context, Request, int) (Response, error) {
-		return Response{Content: strings.Repeat("Expanded summary. ", 120), StopReason: "stop"}, nil
+		return Response{Content: strings.Repeat("Expanded summary. ", 20), StopReason: "stop"}, nil
 	}}
 	session, err := NewSession(t.TempDir(), SessionInfo{Model: "test"})
 	if err != nil {
@@ -28,7 +28,7 @@ func TestCompactionScopeAndRejectedCandidateAreRecorded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	agent, _ := New(Config{Provider: provider, Model: "test"})
+	agent, _ := New(Config{Provider: provider, Model: "test", KeepRecentTokens: 60})
 	if err := session.Restore(agent); err != nil {
 		t.Fatal(err)
 	}
@@ -66,19 +66,19 @@ func TestCompactionScopeAndRejectedCandidateAreRecorded(t *testing.T) {
 			t.Fatal("failed candidate became a checkpoint")
 		}
 	}
-	if prepared == nil || !reflect.DeepEqual(cloneMessages(prepared.Messages), before[:2]) || prepared.UserTurns != 1 || prepared.KeptTurns != 3 || prepared.KeptMessages != 6 || prepared.Chars <= 0 || prepared.Usage.Tokens <= 0 {
-		t.Fatalf("scope=%+v", prepared)
+	if prepared == nil || !reflect.DeepEqual(cloneMessages(prepared.Messages), before[:len(prepared.Messages)]) || prepared.KeptMessages+len(prepared.Messages) != len(before) || prepared.KeptTokens < 60 || prepared.Chars <= 0 || prepared.Usage.Tokens <= 0 {
+		t.Fatal("prepared event has an incorrect protected boundary")
 	}
 	if failed == nil || failed.AfterChars <= failed.BeforeChars || failed.AfterUsage.Tokens <= failed.BeforeUsage.Tokens || failed.Summary == "" || failed.SummaryPath != "" || len(failed.Context.Messages) != 0 {
 		t.Fatalf("diagnostics=%+v", failed)
 	}
-	if strings.Contains(provider.requests[0].Messages[0].Content, "protected one") {
+	if strings.Contains(provider.requests[0].Messages[0].Content, "protected two") {
 		t.Fatal("protected messages entered summary request")
 	}
 }
 
 func TestPreparedInputPreservesOriginalToolOutputAndDoesNotAliasHistory(t *testing.T) {
-	agent, _ := New(Config{Provider: &compactionProvider{}, Model: "test"})
+	agent, _ := New(Config{Provider: &compactionProvider{}, Model: "test", KeepRecentTokens: 60})
 	agent.messages = compactionHistory()
 	original := agent.Messages()
 	var input *CompactionInput
@@ -100,7 +100,7 @@ func TestPreparedInputPreservesOriginalToolOutputAndDoesNotAliasHistory(t *testi
 }
 
 func TestFullyProtectedHistoryReportsAnEmptyProcessingScope(t *testing.T) {
-	agent, _ := New(Config{Provider: &compactionProvider{}, Model: "test"})
+	agent, _ := New(Config{Provider: &compactionProvider{}, Model: "test", KeepRecentTokens: 60})
 	agent.messages = []Message{{Role: RoleUser, Content: "one turn"}, {Role: RoleAssistant, Content: "reply"}}
 	var input *CompactionInput
 	_, _ = agent.Compact(context.Background(), "", func(event Event) {

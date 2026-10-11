@@ -33,9 +33,10 @@ type Message struct {
 	// ContextSummary marks a checkpoint, not a new user turn.
 	ContextSummary bool `json:"context_summary,omitempty"`
 	// RuntimeContext exists only in a request, never in persisted conversation history.
-	RuntimeContext bool           `json:"runtime_context,omitempty"`
-	Source         *MessageSource `json:"source,omitempty"`
-	Sources        []SourceRange  `json:"sources,omitempty"`
+	RuntimeContext bool              `json:"runtime_context,omitempty"`
+	Source         *MessageSource    `json:"source,omitempty"`
+	Sources        []SourceRange     `json:"sources,omitempty"`
+	Checkpoint     *CompactionMemory `json:"checkpoint,omitempty"`
 }
 
 // MessageSource points to an original message_added event in this session.
@@ -47,10 +48,11 @@ type MessageSource struct {
 
 // SourceRange is inclusive; history tools return semantic records inside it.
 type SourceRange struct {
-	StartSeq uint64 `json:"start_seq"`
-	EndSeq   uint64 `json:"end_seq"`
-	RunID    string `json:"run_id,omitempty"`
-	StepID   string `json:"step_id,omitempty"`
+	StartSeq    uint64 `json:"start_seq"`
+	EndSeq      uint64 `json:"end_seq"`
+	RunID       string `json:"run_id,omitempty"`
+	StepID      string `json:"step_id,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // ToolDefinition 是发送给模型的工具元数据；Schema 用 JSON Schema 约束参数。
@@ -154,30 +156,32 @@ const (
 	EventCompactionPrepared EventType = "compaction_prepared"
 	EventCompactionRequest  EventType = "compaction_request"
 	EventCompactionDelta    EventType = "compaction_delta"
+	EventCompactionProgress EventType = "compaction_progress"
 	EventCompactionEnd      EventType = "compaction_end"
 	EventContextCompacted   EventType = "context_compacted"
 )
 
 // Event 是观察和会话日志的统一记录；字段按 Type 选择性填充。
 type Event struct {
-	Type            EventType           `json:"type"`
-	Turn            int                 `json:"turn,omitempty"`
-	Text            string              `json:"text,omitempty"`
-	Reasoning       string              `json:"reasoning,omitempty"`
-	RawRequest      string              `json:"raw_request,omitempty"`
-	RawChunk        string              `json:"raw_chunk,omitempty"`
-	ToolCallDelta   *ToolCallDelta      `json:"tool_call_delta,omitempty"`
-	Message         *Message            `json:"message,omitempty"`
-	Request         *Request            `json:"request,omitempty"`
-	Usage           *Usage              `json:"usage,omitempty"`
-	ToolCall        *ToolCall           `json:"tool_call,omitempty"`
-	ToolResult      string              `json:"tool_result,omitempty"`
-	IsError         bool                `json:"is_error,omitempty"`
-	Reason          string              `json:"reason,omitempty"`
-	Error           string              `json:"error,omitempty"`
-	Collaboration   *CollaborationState `json:"collaboration,omitempty"`
-	Compaction      *CompactionState    `json:"compaction,omitempty"`
-	CompactionInput *CompactionInput    `json:"compaction_input,omitempty"`
+	Type               EventType           `json:"type"`
+	Turn               int                 `json:"turn,omitempty"`
+	Text               string              `json:"text,omitempty"`
+	Reasoning          string              `json:"reasoning,omitempty"`
+	RawRequest         string              `json:"raw_request,omitempty"`
+	RawChunk           string              `json:"raw_chunk,omitempty"`
+	ToolCallDelta      *ToolCallDelta      `json:"tool_call_delta,omitempty"`
+	Message            *Message            `json:"message,omitempty"`
+	Request            *Request            `json:"request,omitempty"`
+	Usage              *Usage              `json:"usage,omitempty"`
+	ToolCall           *ToolCall           `json:"tool_call,omitempty"`
+	ToolResult         string              `json:"tool_result,omitempty"`
+	IsError            bool                `json:"is_error,omitempty"`
+	Reason             string              `json:"reason,omitempty"`
+	Error              string              `json:"error,omitempty"`
+	Collaboration      *CollaborationState `json:"collaboration,omitempty"`
+	Compaction         *CompactionState    `json:"compaction,omitempty"`
+	CompactionInput    *CompactionInput    `json:"compaction_input,omitempty"`
+	CompactionProgress *CompactionProgress `json:"compaction_progress,omitempty"`
 }
 
 // EmitFunc 接收同步发出的事件；回调应尽快返回，避免阻塞执行循环。

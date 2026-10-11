@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 
@@ -26,8 +27,10 @@ type Config struct {
 	PlansDir string
 	// PlanTemplatePath is an optional editable resource; empty uses the packaged default.
 	PlanTemplatePath string
-	// KeepRecentTurns protects complete user turns during compaction; zero uses the default.
-	KeepRecentTurns int
+	// KeepRecentTokens protects complete recent model turns; zero uses the default.
+	KeepRecentTokens int
+	// CompactionTargetRatio is the automatic post-compaction input target; zero uses the default.
+	CompactionTargetRatio float64
 	// SystemPromptLoader reloads authoritative instructions before every request.
 	// The CLI uses it for AGENTS.md; SDK callers can also inject skills here.
 	SystemPromptLoader func(context.Context) (string, error)
@@ -50,11 +53,17 @@ func New(config Config) (*Agent, error) {
 	if config.MaxTurns == 0 {
 		config.MaxTurns = DefaultMaxTurns
 	}
-	if config.KeepRecentTurns < 0 {
-		return nil, errors.New("keep recent turns cannot be negative")
+	if config.KeepRecentTokens < 0 {
+		return nil, errors.New("keep recent tokens cannot be negative")
 	}
-	if config.KeepRecentTurns == 0 {
-		config.KeepRecentTurns = DefaultKeepRecentTurns
+	if config.KeepRecentTokens == 0 {
+		config.KeepRecentTokens = DefaultKeepRecentTokens
+	}
+	if math.IsNaN(config.CompactionTargetRatio) || math.IsInf(config.CompactionTargetRatio, 0) || config.CompactionTargetRatio < 0 || config.CompactionTargetRatio >= 1 {
+		return nil, errors.New("compaction target ratio must be between zero and one")
+	}
+	if config.CompactionTargetRatio == 0 {
+		config.CompactionTargetRatio = DefaultCompactionTargetRatio
 	}
 	if config.Mode == "" {
 		config.Mode = ModeDefault
@@ -116,16 +125,17 @@ func New(config Config) (*Agent, error) {
 	}
 
 	return &Agent{
-		provider:           config.Provider,
-		model:              config.Model,
-		systemPrompt:       config.SystemPrompt,
-		tools:              compiled,
-		maxTurns:           config.MaxTurns,
-		plansDir:           config.PlansDir,
-		planTemplatePath:   config.PlanTemplatePath,
-		keepRecentTurns:    config.KeepRecentTurns,
-		systemPromptLoader: config.SystemPromptLoader,
-		userInputHandler:   config.UserInputHandler,
-		collaboration:      CollaborationState{Mode: config.Mode},
+		provider:              config.Provider,
+		model:                 config.Model,
+		systemPrompt:          config.SystemPrompt,
+		tools:                 compiled,
+		maxTurns:              config.MaxTurns,
+		plansDir:              config.PlansDir,
+		planTemplatePath:      config.PlanTemplatePath,
+		keepRecentTokens:      config.KeepRecentTokens,
+		compactionTargetRatio: config.CompactionTargetRatio,
+		systemPromptLoader:    config.SystemPromptLoader,
+		userInputHandler:      config.UserInputHandler,
+		collaboration:         CollaborationState{Mode: config.Mode},
 	}, nil
 }

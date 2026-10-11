@@ -73,16 +73,17 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		inputHandler = ui.handle
 	}
 	agent, err := iota.New(iota.Config{
-		Provider:         provider,
-		Model:            opts.model,
-		SystemPrompt:     systemPrompt,
-		Tools:            selectedTools,
-		MaxTurns:         opts.maxTurns,
-		Mode:             iota.Mode(opts.mode),
-		PlansDir:         plansDir,
-		PlanTemplatePath: filepath.Join(plansDir, "template.md"),
-		KeepRecentTurns:  opts.keepRecentTurns,
-		UserInputHandler: inputHandler,
+		Provider:              provider,
+		Model:                 opts.model,
+		SystemPrompt:          systemPrompt,
+		Tools:                 selectedTools,
+		MaxTurns:              opts.maxTurns,
+		Mode:                  iota.Mode(opts.mode),
+		PlansDir:              plansDir,
+		PlanTemplatePath:      filepath.Join(plansDir, "template.md"),
+		KeepRecentTokens:      opts.keepRecentTokens,
+		CompactionTargetRatio: opts.compactionTargetRatio,
+		UserInputHandler:      inputHandler,
 		SystemPromptLoader: func(ctx context.Context) (string, error) {
 			if err := ctx.Err(); err != nil {
 				return "", err

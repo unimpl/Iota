@@ -18,7 +18,7 @@ func TestHistoryToolsReadOriginalRecordsAfterCompactionAndResume(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	agent, err := New(Config{Provider: &compactionProvider{}, Model: "test", Tools: []Tool{NewSearchHistoryTool(), NewReadHistoryTool()}})
+	agent, err := New(Config{Provider: &compactionProvider{}, Model: "test", KeepRecentTokens: 60, Tools: []Tool{NewSearchHistoryTool(), NewReadHistoryTool()}})
 	if err != nil {
 		t.Fatal(err)
 	}

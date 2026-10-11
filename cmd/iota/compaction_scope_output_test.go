@@ -16,9 +16,9 @@ func TestCompactionOutputDistinguishesScopeFromFullContext(t *testing.T) {
 	printer.emit(iota.Event{Type: iota.EventCompactionStart, Reason: "manual", Compaction: &state})
 	printer.emit(iota.Event{Type: iota.EventCompactionPrepared, CompactionInput: &iota.CompactionInput{
 		Messages:  []iota.Message{{Role: iota.RoleUser, Content: "old greeting"}, {Role: iota.RoleAssistant, Content: "old reply"}},
-		UserTurns: 1, KeptTurns: 3, KeptMessages: 6, Chars: 181, Usage: iota.ContextUsage{Tokens: 120, Estimated: true}}})
+		UserTurns: 1, KeptTurns: 3, KeptMessages: 6, KeptTokens: 100, Chars: 181, Usage: iota.ContextUsage{Tokens: 120, Estimated: true}}})
 	printer.emit(iota.Event{Type: iota.EventCompactionEnd, IsError: true, Error: "did not reduce context", Compaction: &state})
-	for _, text := range []string{"full request, not the selected old history", "selected old history: 1 user turns, 2 messages", "protected recent history: 3 user turns, 6 messages", "old greeting", "old reply", "candidate full context (not applied): approximately 3815 tokens"} {
+	for _, text := range []string{"full request, not the selected old history", "selected old history: 1 user turns, 2 messages", "protected recent history: 3 model turns, 6 messages", "old greeting", "old reply", "candidate full context (not applied): approximately 3815 tokens"} {
 		if !strings.Contains(stderr.String(), text) {
 			t.Fatalf("missing %q: %s", text, stderr.String())
 		}

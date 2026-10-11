@@ -543,7 +543,7 @@ function renderEvent(item, turnKey, list, modeState) {
     case 'compaction_start':
       badge.textContent = 'COMPACT';
       title.textContent = payload.reason === 'overflow' ? '上下文超限 · 开始自动压缩' : '开始手动压缩上下文';
-      summary('先裁剪旧工具结果，必要时生成历史摘要。最近轮次保持原文。');
+      summary('先裁剪旧工具结果，必要时按完整模型 turn 生成摘要。最近 token 保护范围保持原文。');
       if (payload.compaction) summary('当前完整请求（不是全部要总结的内容）：' + usageLabel(payload.compaction.before_usage, payload.compaction.context_limit_tokens));
       break;
     case 'compaction_prepared':
@@ -566,6 +566,17 @@ function renderEvent(item, turnKey, list, modeState) {
       summary(payload.is_error ? payload.error : payload.usage ? '摘要调用用量：输入 ' + payload.usage.prompt_tokens + ' / 输出 ' + payload.usage.completion_tokens + ' tokens；不是压缩后的完整上下文用量。' : '服务端未返回摘要用量。', payload.is_error ? 'event-summary error-text' : 'event-summary');
       if (payload.text) content.append(textDisclosure('查看生成的摘要', payload.text, 'summary-' + record.seq));
       break;
+    case 'compaction_progress': {
+      const progress = payload.compaction_progress || {};
+      const names = { summarize: '按 turn 生成摘要', normalize: '跨 turn 整理结论', important: '更新重要状态', budget: '检查上下文预算', evict: '移出旧普通摘要' };
+      badge.textContent = 'PROGRESS';
+      title.textContent = names[progress.stage] || '上下文压缩进度';
+      if (progress.total_turns) summary('已处理 ' + progress.processed_turns + '/' + progress.total_turns + ' 个模型 turn' + (progress.batch ? ' · 第 ' + progress.batch + '/' + progress.batches + ' 批' : ''));
+      if (progress.target_tokens) summary('当前约 ' + (progress.current_tokens || 0) + ' tokens · 目标 ' + progress.target_tokens + ' tokens');
+      if (progress.evicted) summary('已移出 ' + progress.evicted + ' 条旧普通摘要');
+      if (progress.important_entries) summary('当前重要状态 ' + progress.important_entries + ' 项');
+      break;
+    }
     case 'compaction_end':
       badge.textContent = payload.is_error ? 'ERROR' : 'COMPACT';
       title.textContent = payload.is_error ? '上下文压缩失败' : '上下文压缩完成';
@@ -582,9 +593,10 @@ function renderEvent(item, turnKey, list, modeState) {
       const state = payload.compaction || {};
       badge.textContent = 'CHECKPOINT';
       title.textContent = '已应用' + (state.stage === 'summary' ? '历史摘要' : '工具结果裁剪') + ' · ' + state.before_chars + ' → ' + state.after_chars + ' 字符';
-      summary('消息 ' + state.before_messages + ' → ' + state.after_messages + ' · 保留最近 ' + state.kept_turns + ' 轮原文 · 裁剪 ' + state.trimmed_tool_results + ' 份工具结果 · 总结 ' + state.summarized_messages + ' 条旧消息');
+      summary('消息 ' + state.before_messages + ' → ' + state.after_messages + ' · 保护最近 ' + state.kept_turns + ' 个模型 turn（约 ' + state.kept_tokens + ' tokens） · 裁剪 ' + state.trimmed_tool_results + ' 份工具结果 · 总结 ' + state.summarized_messages + ' 条旧消息 · 移出 ' + (state.evicted_summaries || 0) + ' 条普通摘要');
       summary('压缩前：' + usageLabel(state.before_usage, state.context_limit_tokens));
       summary('压缩后：' + usageLabel(state.after_usage, state.context_limit_tokens));
+      if (state.target_tokens && state.after_usage?.tokens > state.target_tokens) summary('未达到目标：当前约 ' + state.after_usage.tokens + ' tokens，目标 ' + state.target_tokens + ' tokens；保护范围与重要状态继续保留。');
       if (state.instructions) summary('摘要重点：' + state.instructions);
       if (state.summary) content.append(textDisclosure('查看历史摘要', state.summary, 'checkpoint-summary-' + record.seq));
       if (state.summary_path) content.append(renderSummaryFile(state, record.seq));
@@ -736,7 +748,7 @@ function renderContext(state) {
   facts.append(node('span', '', (request.messages?.length || 0) + ' 条有效消息'));
   if (request.mode) facts.append(node('span', '', modeLabels[request.mode] || request.mode));
   if (info) {
-    facts.append(node('span', '', '保护最近 ' + info.keep_recent_turns + ' 轮原文'));
+    facts.append(node('span', '', info.keep_recent_tokens ? '保护目标 ' + info.keep_recent_tokens + ' tokens；实际约 ' + info.kept_tokens + ' tokens' : '保护最近 ' + info.keep_recent_turns + ' 轮原文'));
     facts.append(node('span', '', '已压缩 ' + state.count + ' 次'));
     if (info.context_limit_tokens) facts.append(node('span', '', '服务端报告上限 ' + info.context_limit_tokens.toLocaleString() + ' tokens'));
   }
@@ -773,7 +785,7 @@ function renderCompactionInput(input, seq) {
   const messages = input.messages || [];
   body.append(node('p', 'context-usage', '旧历史：' + input.user_turns + ' 轮用户请求 · ' + messages.length + ' 条消息 · ' + input.chars + ' 个序列化字符 · 约 ' + (input.usage?.tokens || 0) + ' tokens'));
   if (input.has_previous_summary) body.append(node('p', 'context-note', '处理范围还包含已有历史摘要。'));
-  if (input.kept_turns != null) body.append(node('p', 'context-usage', '保留原文：最近 ' + input.kept_turns + ' 轮 · ' + input.kept_messages + ' 条消息，不进入本次摘要。'));
+  if (input.kept_turns != null) body.append(node('p', 'context-usage', '保留原文：最近 ' + input.kept_turns + ' 个模型 turn · ' + input.kept_messages + ' 条消息 · 约 ' + (input.kept_tokens || 0) + ' tokens，不进入本次摘要。'));
   body.append(node('p', 'context-note', input.source === 'summary_request' ? '以下是实际送去摘要的旧历史，不包含最近保留轮次；旧工具结果可能已经裁剪。' : '以下是旧历史的处理范围；先裁剪其中的旧工具结果，必要时再生成摘要。系统提示与工具定义独立保留。'));
   for (const message of messages.slice(0, 2)) {
     if (message.content) {

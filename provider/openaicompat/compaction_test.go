@@ -48,14 +48,40 @@ func TestAgentRecoversFromHTTPAndStreamCapacityErrors(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
-				io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"checkpoint or answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+				content := "checkpoint or answer"
+				for _, message := range request.Messages {
+					_, body, present := strings.Cut(message.Content, "<turns>\n")
+					if !present {
+						continue
+					}
+					mapping, _, _ := strings.Cut(body, "\n</turns>")
+					var inputs []struct {
+						ID string `json:"id"`
+					}
+					if err := json.Unmarshal([]byte(mapping), &inputs); err != nil {
+						t.Error(err)
+						return
+					}
+					var turns []map[string]string
+					for _, input := range inputs {
+						turns = append(turns, map[string]string{"id": input.ID, "text": "checkpoint or answer"})
+					}
+					data, _ := json.Marshal(struct {
+						Turns     []map[string]string `json:"turns"`
+						Important []string            `json:"important"`
+					}{turns, []string{}})
+					content = string(data)
+					break
+				}
+				encodedContent, _ := json.Marshal(content)
+				io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":"+string(encodedContent)+"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 			}))
 			defer server.Close()
 			provider, err := New(Config{BaseURL: server.URL})
 			if err != nil {
 				t.Fatal(err)
 			}
-			agent, err := iota.New(iota.Config{Provider: provider, Model: "test", SystemPrompt: "project instructions"})
+			agent, err := iota.New(iota.Config{Provider: provider, Model: "test", SystemPrompt: "project instructions", KeepRecentTokens: 60})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -66,7 +92,7 @@ func TestAgentRecoversFromHTTPAndStreamCapacityErrors(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if len(requests) != 8 || !strings.Contains(requests[5].Messages[0].Content, "CONTEXT CHECKPOINT COMPACTION") || len(requests[5].Tools) != 0 || !strings.Contains(requests[7].Messages[0].Content, "project instructions") || !strings.Contains(requests[7].Messages[1].Content, "<summary>") {
+			if len(requests) != 7 || !strings.Contains(requests[5].Messages[0].Content, "Summarize historical model turns") || len(requests[5].Tools) != 0 || !strings.Contains(requests[6].Messages[0].Content, "project instructions") || !strings.Contains(requests[6].Messages[1].Content, "<ordinary-history>") {
 				t.Fatalf("incorrect recovery request sequence: %d calls", len(requests))
 			}
 		})

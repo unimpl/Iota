@@ -45,7 +45,7 @@ func sourceRanges(messages []Message) []SourceRange {
 			if len(ranges) > 0 {
 				last := &ranges[len(ranges)-1]
 				// Gaps contain non-message events; history reads filter those out.
-				if last.RunID == source.RunID && last.StepID == source.StepID && source.StartSeq >= last.StartSeq {
+				if last.RunID == source.RunID && last.StepID == source.StepID && last.Description == source.Description && source.StartSeq >= last.StartSeq {
 					last.EndSeq = max(last.EndSeq, source.EndSeq)
 					continue
 				}
@@ -81,55 +81,56 @@ func compactionUnits(messages []Message, budget int) []CompactionUnit {
 	return units
 }
 
-// compactionBoundary preserves recent runs when possible. On overflow it can
-// checkpoint an older prefix of the protected run, retaining its newest batch.
-func compactionBoundary(messages []Message, keep int, overflow bool) (int, int) {
-	cut, kept := recentTurnBoundary(messages, keep)
-	data, _ := json.Marshal(messages)
-	if !overflow && (cut > 0 || estimateTextTokens(string(data)) <= summaryInputTokens) {
-		return cut, kept
+type modelTurn struct {
+	Start, End int
+	Messages   []Message
+	Sources    []SourceRange
+}
+
+// A model turn contains one assistant response and its complete tool batch.
+// User messages immediately before that response belong to the same turn.
+func modelTurns(messages []Message) []modelTurn {
+	var turns []modelTurn
+	for i := 0; i < len(messages); {
+		if messages[i].ContextSummary {
+			i++
+			continue
+		}
+		start := i
+		for i < len(messages) && messages[i].Role == RoleUser && !messages[i].ContextSummary {
+			i++
+		}
+		if i < len(messages) && messages[i].Role == RoleAssistant {
+			i++
+			i = min(len(messages), i+len(messages[i-1].ToolCalls))
+		}
+		if i == start {
+			i++
+		}
+		part := messages[start:i]
+		turns = append(turns, modelTurn{Start: start, End: i, Messages: part, Sources: sourceRanges(part)})
 	}
-	blocks := messageBlocks(messages)
-	if len(blocks) < 2 {
-		return cut, kept
+	return turns
+}
+
+// The protection target is rounded up to whole turns. Overflow never changes it.
+func compactionBoundary(messages []Message, keepTokens int) (cut, kept, tokens int) {
+	turns := modelTurns(messages)
+	if len(turns) == 0 {
+		return 0, 0, 0
 	}
-	latest, _ := json.Marshal(blocks[len(blocks)-1])
-	if overflow && estimateTextTokens(string(latest)) > summaryInputTokens {
-		// A single complete batch can be too large to retain. Summarize it as
-		// a whole; original records remain accessible through source indices.
-		return len(messages), 0
-	}
-	// Prefer half of the history by estimated size. Round to a complete batch.
-	budget := estimateTextTokens(string(data)) / 2
-	consumed, candidate := 0, 0
-	for _, block := range blocks[:len(blocks)-1] {
-		data, _ := json.Marshal(block)
-		consumed += estimateTextTokens(string(data))
-		candidate += len(block)
-		if consumed >= budget {
+	cut = turns[len(turns)-1].Start
+	for i := len(turns) - 1; i >= 0; i-- {
+		part := turns[i]
+		data, _ := json.Marshal(modelVisibleRequest(Request{Messages: part.Messages}).Messages)
+		tokens += estimateTextTokens(string(data))
+		kept++
+		cut = part.Start
+		if tokens >= keepTokens {
 			break
 		}
 	}
-	// Prefer a run/step transition near the budget boundary when one exists.
-	boundary := 0
-	for i, block := range blocks[:len(blocks)-1] {
-		boundary += len(block)
-		current, next := block[0].Source, blocks[i+1][0].Source
-		if boundary >= candidate && current != nil && next != nil && (current.RunID != next.RunID || current.StepID != next.StepID) {
-			candidate = boundary
-			break
-		}
-	}
-	if candidate > cut {
-		cut = candidate
-		kept = 0
-		for _, message := range messages[cut:] {
-			if message.Role == RoleUser && !message.ContextSummary {
-				kept++
-			}
-		}
-	}
-	return cut, kept
+	return cut, kept, tokens
 }
 
 func boundedSummaryMessages(messages []Message, chars int) []Message {
@@ -169,21 +170,26 @@ func sourceIndex(ranges []SourceRange) string {
 		if source.StepID != "" {
 			fmt.Fprintf(&text, " step=%s", source.StepID)
 		}
+		if source.Description != "" {
+			description, _ := json.Marshal(source.Description)
+			fmt.Fprintf(&text, " description=%s", description)
+		}
 		text.WriteByte('\n')
 	}
 	text.WriteString("</source-index>")
 	return text.String()
 }
 
-// Older sources stay readable as one broad interval; recent units keep precise
-// run/step pointers. Full unit indices remain in the JSONL checkpoint.
+// Bound only the displayed index. Checkpoint metadata retains all descriptions
+// and original addresses for inheritance across later compactions.
 func checkpointSources(ranges []SourceRange) []SourceRange {
 	const maxRanges = 32
 	if len(ranges) <= maxRanges {
 		return append([]SourceRange(nil), ranges...)
 	}
 	older := ranges[:len(ranges)-maxRanges+1]
-	combined := SourceRange{StartSeq: older[0].StartSeq, EndSeq: older[0].EndSeq}
+	combined := SourceRange{StartSeq: older[0].StartSeq, EndSeq: older[0].EndSeq,
+		Description: "Older history grouped for context size; use search_history with a topic, tool name, or file path to locate specific original records."}
 	for _, source := range older[1:] {
 		combined.StartSeq = min(combined.StartSeq, source.StartSeq)
 		combined.EndSeq = max(combined.EndSeq, source.EndSeq)

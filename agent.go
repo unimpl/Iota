@@ -20,17 +20,18 @@ var (
 // Agent 持有对话历史和工具定义；同一实例一次只能执行一个 Run。
 // mu 保护运行状态和消息，避免外部读取与执行并发时发生数据竞争。
 type Agent struct {
-	provider           Provider
-	model              string
-	systemPrompt       string
-	tools              []compiledTool
-	maxTurns           int
-	plansDir           string
-	planTemplatePath   string
-	keepRecentTurns    int
-	systemPromptLoader func(context.Context) (string, error)
-	contextLimitTokens int
-	userInputHandler   UserInputHandler
+	provider              Provider
+	model                 string
+	systemPrompt          string
+	tools                 []compiledTool
+	maxTurns              int
+	plansDir              string
+	planTemplatePath      string
+	keepRecentTokens      int
+	compactionTargetRatio float64
+	systemPromptLoader    func(context.Context) (string, error)
+	contextLimitTokens    int
+	userInputHandler      UserInputHandler
 
 	mu            sync.Mutex
 	running       bool

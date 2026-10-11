@@ -60,5 +60,9 @@ func cloneMessagePointer(message Message) *Message {
 		copy.Source = &source
 	}
 	copy.Sources = append([]SourceRange(nil), message.Sources...)
+	if message.Checkpoint != nil {
+		memory := cloneCompactionMemory(*message.Checkpoint)
+		copy.Checkpoint = &memory
+	}
 	return &copy
 }

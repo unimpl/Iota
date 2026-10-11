@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,18 +21,19 @@ const defaultTools = "read,list,write,edit,bash,save_plan,update_progress,search
 
 // fileConfig 对应 TOML 配置；指针和切片保留“未设置”与“显式置空”的区别。
 type fileConfig struct {
-	Model           string   `toml:"model"`
-	BaseURL         string   `toml:"base_url"`
-	APIKey          string   `toml:"api_key"`
-	CWD             string   `toml:"cwd"`
-	System          string   `toml:"system"`
-	Tools           []string `toml:"tools"`
-	MaxTurns        *int     `toml:"max_turns"`
-	Timeout         string   `toml:"timeout"`
-	SaveSession     *bool    `toml:"save_session"`
-	Resume          string   `toml:"resume"`
-	Mode            string   `toml:"mode"`
-	KeepRecentTurns *int     `toml:"compaction_keep_recent_turns"`
+	Model                 string   `toml:"model"`
+	BaseURL               string   `toml:"base_url"`
+	APIKey                string   `toml:"api_key"`
+	CWD                   string   `toml:"cwd"`
+	System                string   `toml:"system"`
+	Tools                 []string `toml:"tools"`
+	MaxTurns              *int     `toml:"max_turns"`
+	Timeout               string   `toml:"timeout"`
+	SaveSession           *bool    `toml:"save_session"`
+	Resume                string   `toml:"resume"`
+	Mode                  string   `toml:"mode"`
+	KeepRecentTokens      *int     `toml:"compaction_keep_recent_tokens"`
+	CompactionTargetRatio *float64 `toml:"compaction_target_ratio"`
 }
 
 // loadConfig 获取用户目录和当前目录，供配置查找使用。
@@ -84,18 +86,19 @@ func loadConfigFrom(home, cwd string) (fileConfig, error) {
 // optionsFromConfig 用默认值补齐文件配置；空工具数组表示禁用全部工具。
 func optionsFromConfig(config fileConfig) (options, error) {
 	opts := options{
-		model:           config.Model,
-		baseURL:         config.BaseURL,
-		apiKey:          config.APIKey,
-		cwd:             ".",
-		system:          config.System,
-		tools:           defaultTools,
-		maxTurns:        iota.DefaultMaxTurns,
-		timeout:         openaicompat.DefaultTimeout,
-		resume:          config.Resume,
-		mode:            string(iota.ModeDefault),
-		modeRequested:   config.Mode != "",
-		keepRecentTurns: iota.DefaultKeepRecentTurns,
+		model:                 config.Model,
+		baseURL:               config.BaseURL,
+		apiKey:                config.APIKey,
+		cwd:                   ".",
+		system:                config.System,
+		tools:                 defaultTools,
+		maxTurns:              iota.DefaultMaxTurns,
+		timeout:               openaicompat.DefaultTimeout,
+		resume:                config.Resume,
+		mode:                  string(iota.ModeDefault),
+		modeRequested:         config.Mode != "",
+		keepRecentTokens:      iota.DefaultKeepRecentTokens,
+		compactionTargetRatio: iota.DefaultCompactionTargetRatio,
 	}
 	if config.Mode != "" {
 		opts.mode = config.Mode
@@ -112,11 +115,17 @@ func optionsFromConfig(config fileConfig) (options, error) {
 	if config.MaxTurns != nil {
 		opts.maxTurns = *config.MaxTurns
 	}
-	if config.KeepRecentTurns != nil {
-		if *config.KeepRecentTurns <= 0 {
-			return options{}, errors.New("compaction_keep_recent_turns must be positive")
+	if config.KeepRecentTokens != nil {
+		if *config.KeepRecentTokens <= 0 {
+			return options{}, errors.New("compaction_keep_recent_tokens must be positive")
 		}
-		opts.keepRecentTurns = *config.KeepRecentTurns
+		opts.keepRecentTokens = *config.KeepRecentTokens
+	}
+	if config.CompactionTargetRatio != nil {
+		if math.IsNaN(*config.CompactionTargetRatio) || math.IsInf(*config.CompactionTargetRatio, 0) || *config.CompactionTargetRatio <= 0 || *config.CompactionTargetRatio >= 1 {
+			return options{}, errors.New("compaction_target_ratio must be between zero and one")
+		}
+		opts.compactionTargetRatio = *config.CompactionTargetRatio
 	}
 	if config.Timeout != "" {
 		timeout, err := time.ParseDuration(config.Timeout)

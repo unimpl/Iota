@@ -14,21 +14,22 @@ import (
 
 // options 是合并文件、环境变量和命令行参数后的运行配置。
 type options struct {
-	prompt          string
-	model           string
-	baseURL         string
-	apiKey          string
-	cwd             string
-	system          string
-	tools           string
-	maxTurns        int
-	timeout         time.Duration
-	noSession       bool
-	resume          string
-	resumeRequested bool
-	mode            string
-	modeRequested   bool
-	keepRecentTurns int
+	prompt                string
+	model                 string
+	baseURL               string
+	apiKey                string
+	cwd                   string
+	system                string
+	tools                 string
+	maxTurns              int
+	timeout               time.Duration
+	noSession             bool
+	resume                string
+	resumeRequested       bool
+	mode                  string
+	modeRequested         bool
+	keepRecentTokens      int
+	compactionTargetRatio float64
 }
 
 // parseOptions 加载本地配置，再交给可注入依赖的解析函数处理覆盖关系。

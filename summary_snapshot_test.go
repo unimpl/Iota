@@ -24,7 +24,7 @@ func snapshotSession(t *testing.T, provider Provider) (*Session, *Agent) {
 			t.Fatal(err)
 		}
 	}
-	agent, err := New(Config{Provider: provider, Model: "test"})
+	agent, err := New(Config{Provider: provider, Model: "test", KeepRecentTokens: 60})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,18 +88,24 @@ func TestSummarySnapshotsUseCheckpointSequenceAndSkipRepeat(t *testing.T) {
 	if !checkpointFound {
 		t.Fatal("checkpoint missing")
 	}
+	initialRequests := len(provider.requests)
 	if _, err := session.Compact(context.Background(), agent, "", nil); !errors.Is(err, ErrNothingToCompact) {
 		t.Fatalf("repeat err=%v", err)
 	}
-	if len(provider.requests) != 1 {
+	if len(provider.requests) != initialRequests {
 		t.Fatal("unchanged context was summarized again")
 	}
 	files, err := filepath.Glob(filepath.Join(dir, "*.summary.*.md"))
 	if err != nil || len(files) != 1 {
 		t.Fatalf("files=%v err=%v", files, err)
 	}
-	if _, err := session.Run(context.Background(), agent, "next user request", nil); err != nil {
+	if _, err := session.Run(context.Background(), agent, strings.Repeat("new evidence ", 300), nil); err != nil {
 		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := session.Run(context.Background(), agent, fmt.Sprintf("later %d", i), nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	second, err := session.Compact(context.Background(), agent, "保留新的进度", nil)
 	if err != nil {

@@ -58,7 +58,7 @@ func TestOverflowCompactsWithinOneRunAndPreservesLatestBatch(t *testing.T) {
 		}
 		return Response{Content: "continued", StopReason: "stop"}, nil
 	}}
-	agent, _ := New(Config{Provider: provider, Model: "test"})
+	agent, _ := New(Config{Provider: provider, Model: "test", KeepRecentTokens: 60})
 	agent.messages = messages
 	before := agent.Messages()
 	state, err := agent.compact(t.Context(), "focus", "overflow", true, 2, nil, nil)

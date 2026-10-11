@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,6 +17,37 @@ type cliCompactProvider struct{ requests []iota.Request }
 
 func (p *cliCompactProvider) Stream(_ context.Context, request iota.Request, _ func(iota.Delta)) (iota.Response, error) {
 	p.requests = append(p.requests, request)
+	if strings.Contains(request.Messages[0].Content, "<turns>\n") {
+		var inputs []struct {
+			ID string `json:"id"`
+		}
+		_, body, _ := strings.Cut(request.Messages[0].Content, "<turns>\n")
+		mapping, _, _ := strings.Cut(body, "\n</turns>")
+		if err := json.Unmarshal([]byte(mapping), &inputs); err != nil {
+			return iota.Response{}, err
+		}
+		var entries []struct {
+			ID   string `json:"id"`
+			Text string `json:"text"`
+		}
+		for _, input := range inputs {
+			entries = append(entries, struct {
+				ID   string `json:"id"`
+				Text string `json:"text"`
+			}{input.ID, "checkpoint"})
+		}
+		data, err := json.Marshal(struct {
+			Turns []struct {
+				ID   string `json:"id"`
+				Text string `json:"text"`
+			} `json:"turns"`
+			Important []string `json:"important"`
+		}{entries, []string{}})
+		if err != nil {
+			return iota.Response{}, err
+		}
+		return iota.Response{Content: string(data), StopReason: "stop"}, nil
+	}
 	return iota.Response{Content: "checkpoint", StopReason: "stop"}, nil
 }
 
@@ -23,10 +55,10 @@ func TestCompactionConfigDefaultOverrideAndNoEnvironment(t *testing.T) {
 	for _, value := range []int{0, 1, 5, -1} {
 		config := fileConfig{}
 		if value != 0 {
-			config.KeepRecentTurns = &value
+			config.KeepRecentTokens = &value
 		}
 		opts, err := parseOptionsWithConfig(nil, &bytes.Buffer{}, config, func(name string) (string, bool) {
-			return "99", name == "IOTA_COMPACTION_KEEP_RECENT_TURNS"
+			return "99", name == "IOTA_COMPACTION_KEEP_RECENT_TOKENS"
 		})
 		if value < 0 {
 			if err == nil {
@@ -36,27 +68,36 @@ func TestCompactionConfigDefaultOverrideAndNoEnvironment(t *testing.T) {
 		}
 		want := value
 		if want == 0 {
-			want = 3
+			want = iota.DefaultKeepRecentTokens
 		}
-		if err != nil || opts.keepRecentTurns != want {
+		if err != nil || opts.keepRecentTokens != want {
 			t.Fatalf("value=%d options=%+v err=%v", value, opts, err)
 		}
 	}
 	zero := 0
-	if _, err := optionsFromConfig(fileConfig{KeepRecentTurns: &zero}); err == nil {
+	if _, err := optionsFromConfig(fileConfig{KeepRecentTokens: &zero}); err == nil {
 		t.Fatal("accepted explicitly zero retention")
 	}
 	home := t.TempDir()
-	writeConfig(t, filepath.Join(home, ".iota", "config.toml"), "compaction_keep_recent_turns = 7\n")
+	writeConfig(t, filepath.Join(home, ".iota", "config.toml"), "compaction_keep_recent_tokens = 7\n")
 	config, err := loadConfigFrom(home, t.TempDir())
-	if err != nil || config.KeepRecentTurns == nil || *config.KeepRecentTurns != 7 {
+	if err != nil || config.KeepRecentTokens == nil || *config.KeepRecentTokens != 7 {
 		t.Fatalf("config=%+v err=%v", config, err)
+	}
+	ratio := 0.35
+	opts, err := optionsFromConfig(fileConfig{CompactionTargetRatio: &ratio})
+	if err != nil || opts.compactionTargetRatio != ratio {
+		t.Fatalf("target ratio=%v err=%v", opts.compactionTargetRatio, err)
+	}
+	invalidRatio := 1.0
+	if _, err := optionsFromConfig(fileConfig{CompactionTargetRatio: &invalidRatio}); err == nil {
+		t.Fatal("accepted a target ratio of 100%")
 	}
 }
 
 func TestInteractiveCompactFocusIsNotSubmittedAsUserPrompt(t *testing.T) {
 	provider := &cliCompactProvider{}
-	agent, err := iota.New(iota.Config{Provider: provider, Model: "test"})
+	agent, err := iota.New(iota.Config{Provider: provider, Model: "test", KeepRecentTokens: 60})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +138,7 @@ func TestPromptLoaderReadsUpdatedAgentsAfterCompaction(t *testing.T) {
 	path := filepath.Join(cwd, "AGENTS.md")
 	writePromptFile(t, path, "original project rule")
 	provider := &cliCompactProvider{}
-	agent, err := iota.New(iota.Config{Provider: provider, Model: "test", SystemPromptLoader: func(ctx context.Context) (string, error) { return loadSystemPrompt(cwd, "") }})
+	agent, err := iota.New(iota.Config{Provider: provider, Model: "test", KeepRecentTokens: 40, SystemPromptLoader: func(ctx context.Context) (string, error) { return loadSystemPrompt(cwd, "") }})
 	if err != nil {
 		t.Fatal(err)
 	}

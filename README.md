@@ -34,7 +34,8 @@ mode = "default" # plan 表示先探索和编写计划
 max_turns = 100
 timeout = "2m"
 save_session = true # false 表示只保留内存对话
-compaction_keep_recent_turns = 3 # 压缩时保留最近几轮完整原文
+compaction_keep_recent_tokens = 8000 # 以完整模型轮次保护最近原文
+compaction_target_ratio = 0.20 # 自动压缩后的上下文目标比例
 ```
 
 `api_key` 支持 `$NAME` 和 `${NAME}` 形式的环境变量引用；变量不存在时会报错。`OPENAI_API_KEY` 仍可直接覆盖它。其他可用环境变量为 `IOTA_MODEL`、`OPENAI_BASE_URL`、`IOTA_CWD`、`IOTA_SYSTEM`、`IOTA_TOOLS`、`IOTA_MAX_TURNS`、`IOTA_TIMEOUT`、`IOTA_SAVE_SESSION`、`IOTA_RESUME` 和 `IOTA_MODE`。`IOTA_TOOLS=none` 禁用全部工具，包括计划工具。未知 TOML 字段、非法时长、模式和非正数轮数会作为配置错误退出。
@@ -45,35 +46,17 @@ CLI 支持 `~/.iota/SYSTEM.md` 和工作目录中的 `.iota/SYSTEM.md`：找到�
 
 ### 上下文压缩
 
-`/compact` 先裁剪旧工具结果，保留其首尾各 1000 个字符及裁剪标记。优先保护最近 N 轮原文：一轮指用户请求和它后面的所有助手回复、工具调用与结果，直到下一条用户请求。`compaction_keep_recent_turns` 默认是 3，配置文件可以省略该项，显式值必须为正整数；没有对应环境变量或命令行参数。
+下一版目标策略见 [上下文压缩设计](docs/context-compaction.md)。本节以下描述当前实现。`/compact` 和上下文溢出后的自动恢复共用同一套保护规则：按模型 turn 从最新消息向前累计，默认至少保护约 8000 token，并扩展到完整 turn 的边界。一个 turn 是一次模型回复及其完整工具结果，回复前的用户消息归入该 turn。`compaction_keep_recent_tokens` 可在 TOML 中设置正整数；受保护原文不会被裁剪或摘要。若没有更旧的内容可处理，压缩明确失败。
 
-摘要按 run 和稳定的 `step_id` 组织，输入分块以约 12000 token 的估算预算为目标，完整助手工具调用批次及其结果不拆开。已有检查点顺序参与更新，最终摘要限制为 8000 个字符。近期单个 run 本身超过分块预算，或正常请求已经超限时，可以压缩该 run 内较早的完整批次；最新批次自身过大时，自动恢复也可将它整体纳入摘要。单个摘要批次仍超限时，保留首尾文本和有效 JSON 参数摘录，并标记省略及原始来源；不会按字符切断序列化 JSON。
+旧工具结果仍保留首尾各 1000 个字符和原始来源地址。手动压缩若裁剪已让整个请求的字符数减少至少 20%，可以直接使用裁剪结果；否则按完整模型 turn 生成独立、简短的普通摘要。相邻的小 turn 可以合并为一次模型调用，输出仍须逐个引用程序分配的 turn ID。重要信息单独保存：目标、约束、确认事实、决定及原因、未解决问题、排除方案和必要证据，每项附原始 session 来源。已保存计划、批准和执行进度继续作为独立的权威状态提供。已有普通摘要不会再次交给模型重写；新结论按稳定主题键更新重要状态。
 
-原始消息记录其 `seq`、`run_id` 和执行中的 `step_id`。摘要检查点保存程序生成的来源区间；同一步骤跨 run 恢复时保留多个区间。模型可见的来源索引最多保留 32 个区间，较老区间合并为宽范围，精细索引仍在 JSONL 检查点中。
+摘要提示只把旧历史作为数据处理，模型不获得工具。程序校验 turn ID、重要信息的引用和输出格式，再绑定真实 `seq`、`run_id`、`step_id`；错误、缺失、重复或编造的 ID 会拒绝整次压缩。程序保证地址对应关系，不能保证模型对原文的语义判断一定正确。摘要读取裁剪前的原始工具结果；启用 Session 时，已裁剪过的旧输出可从 JSONL 原文恢复。单个摘要请求超限时，先拆分多个 turn；单个 turn 仍过大时使用标记不完整的摘录，不把遗漏内容当作已确认事实。
 
-手动压缩时，若裁剪让整个请求的字符数至少减少 20%，直接使用裁剪后的历史；否则调用当前模型，将更老的对话总结成检查点。`/compact 保留文件路径、关键决策和未完成事项` 会生成指定重点的摘要。已有摘要参与下一次摘要更新。摘要提示参考 Codex 的 `compact/prompt.md`，摘要请求不提供工具，正文不写入普通助手输出。
+自动压缩从服务端错误中取得已知上下文容量；若没有容量数字，用被拒绝请求的估算 token 数计算保守目标并标记为估算。`compaction_target_ratio` 默认 0.20。预算覆盖系统规则、工具定义、摘要、重要状态、近期原文和运行时状态。超过目标时，按时间顺序把最老的普通摘要移出模型上下文，摘要元数据仍随检查点存入 JSONL；有效重要状态与最近原文优先保留，无法达到目标时报告实际用量。手动压缩只要求候选完整请求比原请求更小；未变小、失败或取消都不替换当前历史。
 
-连续手动调用 `/compact` 时，若保护范围外只剩已有摘要，且没有新的摘要重点，会提示无需再次压缩，不调用模型，也不生成重复文件。带新重点或出现新的旧历史时可以生成新的检查点。
+`compaction_prepared` 记录选中的旧历史和保护范围；`compaction_progress` 依次报告摘要批次、跨 turn 整理、预算检查与普通摘要淘汰。终端在 stderr 显示进度和估算 token 用量，模型正文不混入这些提示。成功检查点写入 JSONL；启用 Session 且生成摘要时，还写入只供阅读的 `*.summary.<event-id>.md`。JSONL 保留原始消息，`read_history` 按来源地址分页读取；`search_history` 按关键词搜索原始消息和已移出的普通摘要，后者在 `summary_matches` 中返回原始来源。两种工具仅在持久化 Session 中可用。
 
-正常请求遇到明确的上下文超限错误时，先裁剪旧工具结果并重试；重试仍超限则生成旧历史摘要并再次重试。每个模型轮次最多进行一次工具裁剪和一次摘要恢复，不会无限重试。服务端错误给出明确容量数字时，会将它记录为上下文上限；没有数字时保持未知，不从 usage 推测容量，也不依赖预置模型目录。速率限制、网络错误和一般输出截断不触发容量恢复。
-
-压缩不改变 plan/default 模式、计划批准状态或工具权限。系统规则、规划模板与状态解释规则放在 system。当前计划、绑定正文版本的批准信息和最新完整进度，作为本次请求末尾的临时 `runtime-context` 消息加载，不加入普通消息历史。下一次请求替换这份尾部状态，前面的历史保持原样，有利于复用长前缀缓存；实际缓存命中由服务商决定。SDK 可以使用 `Config.SystemPromptLoader` 动态注入项目规则或未来的 skills 指令；SDK 自身不自动发现这些文件。
-
-压缩结果作为 `context_compacted` 检查点追加到 JSONL，原始事件不删除；恢复时替换有效消息历史，避免重新带回已压缩的旧内容。查看器顶部展示当前有效上下文、历史摘要和已知容量，时间线标出裁剪或摘要、前后字符数、保留轮数及摘要重点，并可展开检查点中的系统提示、消息和工具。字符统计是序列化请求的大小，不是精确 token 用量。
-
-启用会话保存时，每次成功生成并应用 LLM 摘要，CLI 额外创建 `~/.iota/sessions/<session文件名去掉.jsonl>.summary.<event-id>.md`，其中 `event-id` 是对应 `context_compacted` 事件的 `seq`，不是 run ID。文件包含来源会话、检查点、触发方式、生成时间、摘要重点和正文，权限为 `0600`；已有快照不覆盖。只裁剪工具结果、失败、取消或没有缩小上下文时不生成摘要文件。`--no-session` 不生成这些快照。JSONL 是恢复依据，Markdown 是阅读用的派生文件；删除 Markdown 不影响会话恢复。
-
-手动和自动压缩开始、完成时，stderr 都输出当前及压缩后的估算 token 用量，并在容量已知时输出剩余可用百分比。估算包含系统提示、消息和工具定义，按 ASCII 约四字符一 token、非 ASCII 约一字符一 token 计算，不保证请求能够放进窗口。剩余百分比是 `max(0, 1 - 估算用量 / 服务端报告上限) × 100%`；上限未知时明确显示未知。压缩判断和超限恢复仍由原策略决定，不使用这些显示估算触发压缩。
-
-`compaction_prepared` 记录实际选中的旧消息原文、轮数、消息数和大小，并单独记录保留原文的近期轮数、消息数。终端给出最多五条消息的简短预览，查看器可以展开完整处理范围。当前完整请求包含系统提示、工具定义和受保护的近期消息，不能把它的大小当作全部待压缩内容。摘要调用返回的 usage 也只代表摘要请求，不代表压缩后的完整会话。
-
-未缩小上下文的候选结果不会应用。失败事件保留前后大小及候选摘要，查看器明确标记“未应用”，有效历史仍由原检查点决定。旧日志没有 `compaction_prepared` 时，查看器会从已有 `compaction_request` 的序列化对话中还原待总结消息；不修改原始日志。
-
-查看器展示快照地址、“打开摘要 Markdown”和按需加载的文件预览，并显示压缩检查点的前后 token 用量、容量和余量；后续新增消息可能增加当前用量。文件缺失时仍可查看 JSONL 内的摘要。预览只读取选中会话对应的快照，同一会话内复用已加载的内容，不预先加载所有会话的 Markdown。
-
-摘要错误、取消、空内容、输出截断、超过摘要输出预算或工具调用不会替换历史。系统规则或独立加载的计划状态自身过大时，历史压缩仍不能解决超限；需要缩短这些内容。单个初始用户消息没有可保留的完整后续批次时，也可能无法自动恢复。`/reset` 清空历史，`/compact` 保留近期原文和旧历史摘要。
-
-`search_history` 与 `read_history` 只在绑定持久化 Session 时声明，`--no-session` 下不声明。前者执行不区分大小写的字面搜索，返回片段和来源；后者按包含端点的 `start_seq`、`end_seq` 读取原始用户/助手消息和工具调用、结果，不返回重复的模型请求或流片段。返回值最多 32 KiB，可用 `next_seq`、`next_offset` 继续读取；offset 按 Unicode 字符计数。支持 `run_id`、`step_id` 过滤，默认只读取最近 `/reset` 之后的记录，显式 `include_before_reset: true` 才访问同 session 内更早的记录。压缩后的原始记录仍可查询。
+压缩不会改变当前模式、计划批准或执行进度。系统规则和规划模板在下一次正常请求重新加载；计划、批准和进度从尾部的临时 `runtime-context` 提供。系统规则或重要状态自身超过窗口时，历史压缩无法解决，应明确报错。`/reset` 清空当前上下文与协作状态，但会话 JSONL 保留先前记录。
 
 ### 规划与执行
 
@@ -204,7 +187,7 @@ SDK 注册 `iota.NewRequestUserInputTool()` 并设置 `Config.UserInputHandler` 
 
 `agent.Collaboration()` 返回模式、计划及进度的独立副本。无会话保存时用 `agent.SetMode(mode, emit)` 切换模式，`agent.ApprovePlan(emit)` 批准计划；启用保存时对应调用 `session.SetMode(agent, mode, emit)` 和 `session.ApprovePlan(agent, emit)`。批准 API 只读取计划并切换模式，不自动运行模型；调用方随后用 `session.Run` 提交执行请求。
 
-`Config.KeepRecentTurns` 设置压缩保护轮数，零值使用 `iota.DefaultKeepRecentTurns`（3）。无持久化时调用 `agent.Compact(ctx, instructions, emit)`；保存会话时调用 `session.Compact(ctx, agent, instructions, emit)`。这两个 API 在空闲时使用，返回包含完整有效上下文和前后大小的 `CompactionState`。`Message.ContextSummary` 标记摘要消息，它不计为用户请求。自动恢复由 `Run` 内部处理。
+`Config.KeepRecentTokens` 设置最近原文的 token 保护目标，零值使用 `iota.DefaultKeepRecentTokens`（8000）；`Config.CompactionTargetRatio` 设置自动压缩后的窗口目标，零值为 0.20。无持久化时调用 `agent.Compact(ctx, instructions, emit)`；保存会话时调用 `session.Compact(ctx, agent, instructions, emit)`。这两个 API 在空闲时使用，返回包含有效上下文和前后大小的 `CompactionState`。自动恢复由 `Run` 内部处理。
 
 SDK 的 `Session` 默认在会话文件所在目录保存 Markdown 快照；`session.SetSummaryDir(dir)` 可以显式指定目录。CLI 使用该接口固定为用户的 `~/.iota/sessions`，包括从其他目录恢复会话的情况。`CompactionState.EventID`、`SummaryPath`、`BeforeUsage` 和 `AfterUsage` 提供快照及用量信息。
 

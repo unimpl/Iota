@@ -33,15 +33,17 @@ type historyItem struct {
 }
 
 type historyPage struct {
-	Records    []historyItem `json:"records"`
-	ResetSeq   uint64        `json:"reset_seq,omitempty"`
-	NextSeq    uint64        `json:"next_seq,omitempty"`
-	NextOffset int           `json:"next_offset,omitempty"`
+	Records        []historyItem     `json:"records"`
+	SummaryMatches []OrdinarySummary `json:"summary_matches,omitempty"`
+	MoreSummaries  bool              `json:"more_summaries,omitempty"`
+	ResetSeq       uint64            `json:"reset_seq,omitempty"`
+	NextSeq        uint64            `json:"next_seq,omitempty"`
+	NextOffset     int               `json:"next_offset,omitempty"`
 }
 
 func NewSearchHistoryTool() Tool {
 	return Tool{Name: "search_history", ReadOnly: true, historyTool: true,
-		Description: "Search original messages and tool calls/results in this session with a literal, case-insensitive query. Returns snippets and source seq/run/step IDs. Defaults to records after the latest reset. Continue with start_seq=next_seq. Does not search request copies or stream deltas.",
+		Description: "Search original messages and archived ordinary summaries in this session with a literal, case-insensitive query. Returns snippets and original source seq/run/step IDs. Defaults to records after the latest reset. Continue raw records with start_seq=next_seq. Archived summary matches include their source ranges. Does not search request copies or stream deltas.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":1000},"start_seq":{"type":"integer","minimum":1},"end_seq":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":50},"run_id":{"type":"string"},"step_id":{"type":"string"},"include_before_reset":{"type":"boolean"}},"required":["query"],"additionalProperties":false}`)}
 }
 
@@ -155,6 +157,35 @@ func (s *Session) queryHistory(ctx context.Context, args historyArguments, searc
 		if !search && end < len(text) {
 			page.NextSeq, page.NextOffset = source.Seq, end
 			break
+		}
+	}
+	if search && len(s.messages) > 0 && s.messages[0].Checkpoint != nil {
+		for _, entry := range s.messages[0].Checkpoint.Archived {
+			if !strings.Contains(strings.ToLower(entry.Text), query) {
+				continue
+			}
+			inScope := false
+			for _, source := range entry.Sources {
+				if source.EndSeq >= args.StartSeq && source.StartSeq <= args.EndSeq && (args.RunID == "" || source.RunID == args.RunID) && (args.StepID == "" || source.StepID == args.StepID) {
+					inScope = true
+					break
+				}
+			}
+			if !inScope {
+				continue
+			}
+			candidate := append(page.SummaryMatches, entry)
+			preview := page
+			preview.SummaryMatches = candidate
+			data, err := json.Marshal(preview)
+			if err != nil {
+				return "", err
+			}
+			if len(candidate) > 10 || len(data) > historyMaxBytes-1024 {
+				page.MoreSummaries = true
+				break
+			}
+			page.SummaryMatches = candidate
 		}
 	}
 	data, err := json.Marshal(page)
