@@ -228,7 +228,7 @@ sequenceDiagram
     Session-->>Caller: RunResult、error
 ```
 
-OpenAI 兼容 Provider 将系统提示放在请求的 system 消息中，编码工具定义，并向 `/chat/completions` 发送流式请求。SSE（服务端逐条推送数据的格式）中的工具参数按 Index 汇总；只有收到 `[DONE]` 且工具调用完整时才返回成功。缺少结束标记、调用索引不连续或参数不是有效 JSON 都会报错。每次 `Stream` 单独应用请求超时。
+OpenAI 兼容 Provider 将系统提示放在请求的 system 消息中，编码工具定义，并向 `/chat/completions` 发送流式请求。SSE（服务端逐条推送数据的格式）中的工具参数按 Index 汇总；只有收到 `[DONE]` 且工具调用完整时才返回成功。缺少结束标记、调用索引不连续或参数不是有效 JSON 都会报错。每次 `Stream` 有独立的空闲计时器，先限制等待响应的时间，收到响应头及响应体字节时重置；正文、推理、心跳和部分事件都算活动。连续输出不受 Provider 总时长限制；连续没有数据时取消该请求。调用方取消、context 截止时间和自定义 HTTP client 超时仍有效。计时器的重置、触发和停止受锁保护，过期回调重新检查最后活动时间，避免与新数据到达竞争。
 
 `finish_reason`、`[DONE]` 和 `model_response` 分别表示服务端的停止原因、流结束标记和 Agent 接受完整回复，它们不是同一个阶段。文本可先展示给用户；只有通过完整响应校验的 assistant 消息才进入可恢复历史。系统提示单独保存在运行配置中，不属于 `Agent.messages`。
 

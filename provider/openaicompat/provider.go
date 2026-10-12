@@ -16,7 +16,8 @@ import (
 	iota "github.com/unimpl/Iota"
 )
 
-// DefaultTimeout 为单次模型请求设置上限，避免流连接无限等待。
+// DefaultTimeout bounds waiting for a response and gaps between response reads.
+// Continuous streaming has no provider-imposed total duration limit.
 const DefaultTimeout = 120 * time.Second
 
 // Config 指定兼容接口地址、认证和 HTTP 行为；空地址使用 OpenAI 默认地址。
@@ -24,10 +25,12 @@ type Config struct {
 	BaseURL    string
 	APIKey     string
 	HTTPClient *http.Client
-	Timeout    time.Duration
+	// Timeout bounds waiting for response headers and body idleness, not total
+	// request duration. Parent deadlines and HTTPClient.Timeout still apply.
+	Timeout time.Duration
 }
 
-// Provider 持有已解析的请求地址与客户端；每次 Stream 单独设置超时上下文。
+// Provider holds the endpoint and client; each Stream has its own idle timer.
 type Provider struct {
 	endpoint string
 	apiKey   string
@@ -135,14 +138,20 @@ type streamChunk struct {
 }
 
 // Stream 发送请求并消费 SSE 数据；HTTP 错误正文最多读取 64 KiB，防止错误体过大。
-func (p *Provider) Stream(ctx context.Context, request iota.Request, emit func(iota.Delta)) (iota.Response, error) {
-	ctx, cancel := context.WithTimeout(ctx, p.timeout)
-	defer cancel()
-
+func (p *Provider) Stream(ctx context.Context, request iota.Request, emit func(iota.Delta)) (response iota.Response, streamErr error) {
 	body, err := p.EncodeRequest(request)
 	if err != nil {
 		return iota.Response{}, err
 	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	idle := newResponseIdleTimer(p.timeout, cancel)
+	defer func() {
+		idle.stop()
+		if streamErr != nil && ctx.Err() != nil {
+			streamErr = fmt.Errorf("model request interrupted: %w", context.Cause(ctx))
+		}
+		cancel(nil)
+	}()
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return iota.Response{}, err
@@ -157,15 +166,17 @@ func (p *Provider) Stream(ctx context.Context, request iota.Request, emit func(i
 		return iota.Response{}, err
 	}
 	defer httpResponse.Body.Close()
+	idle.touch()
+	reader := &responseIdleReader{reader: httpResponse.Body, idle: idle}
 	if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
-		data, readErr := io.ReadAll(io.LimitReader(httpResponse.Body, 64<<10))
+		data, readErr := io.ReadAll(io.LimitReader(reader, 64<<10))
 		if readErr != nil {
 			return iota.Response{}, fmt.Errorf("chat completions returned %s: %w", httpResponse.Status, readErr)
 		}
 		return iota.Response{}, fmt.Errorf("chat completions returned %s: %s", httpResponse.Status, strings.TrimSpace(string(data)))
 	}
 
-	return consumeStream(httpResponse.Body, emit)
+	return consumeStream(reader, emit)
 }
 
 // EncodeRequest 暴露实际请求编码，供 Agent 记录与发送内容一致的原始请求体。

@@ -32,7 +32,7 @@ system = "回答前先读取相关文件。"
 tools = ["read", "list", "write", "edit", "bash", "save_plan", "update_progress", "search_history", "read_history", "request_user_input"]
 mode = "default" # plan 表示先探索和编写计划
 max_turns = 100
-timeout = "2m"
+timeout = "2m" # 模型响应等待/空闲超时；bash 命令总时长上限
 save_session = true # false 表示只保留内存对话
 compaction_keep_recent_tokens = 8000 # 以完整模型轮次保护最近原文
 compaction_target_ratio = 0.20 # 自动压缩后的上下文目标比例
@@ -41,6 +41,8 @@ compaction_target_ratio = 0.20 # 自动压缩后的上下文目标比例
 `api_key` 支持 `$NAME` 和 `${NAME}` 形式的环境变量引用；变量不存在时会报错。`OPENAI_API_KEY` 仍可直接覆盖它。其他可用环境变量为 `IOTA_MODEL`、`OPENAI_BASE_URL`、`IOTA_CWD`、`IOTA_SYSTEM`、`IOTA_TOOLS`、`IOTA_MAX_TURNS`、`IOTA_TIMEOUT`、`IOTA_SAVE_SESSION`、`IOTA_RESUME` 和 `IOTA_MODE`。`IOTA_TOOLS=none` 禁用全部工具，包括计划工具。未知 TOML 字段、非法时长、模式和非正数轮数会作为配置错误退出。
 
 CLI 支持 `~/.iota/SYSTEM.md` 和工作目录中的 `.iota/SYSTEM.md`：找到的文件替换内置系统提示。`APPEND_SYSTEM.md` 放在对应的 `.iota` 目录中，用于追加提示。两种文件分别查找，均以工作目录为先、用户目录为后；工作目录的空 `SYSTEM.md` 会使用内置提示，不再查找用户目录的同名文件。`--system`、配置文件中的 `system` 和 `IOTA_SYSTEM` 仍作为额外提示，位于 `APPEND_SYSTEM.md` 之前。工作目录根部的 `AGENTS.md` 最后加入。启动和每次正常模型请求都会读取这些文件，压缩后仍重新注入当前规则。读取已存在的提示文件失败会报错。
+
+`timeout`、`IOTA_TIMEOUT` 和 `--timeout` 对模型请求限制的是等待响应及连续没有收到响应数据的时间，默认 2 分钟。收到响应头后重新计时，随后每次读到响应字节都会重置计时，包括正文、推理、SSE 心跳和尚未收完整的事件。持续输出可以超过 2 分钟；无数据时取消该请求，错误明确标注 `response idle timeout`，不接受不完整的回复或执行其中的工具调用。同一设置对 bash 仍表示命令的总时长上限。
 
 交互模式逐行接收任务，支持 `/reset`、`/compact [摘要重点]`、`/exit` 和下述规划命令。模型文本写入 stdout，推理、提示符、工具状态和错误写入 stderr。
 
@@ -137,7 +139,7 @@ go run ./cmd/iota-view --folder /path/to/sessions
 --cwd         工具工作目录
 --system      附加系统提示
 --max-turns   每次运行最多模型轮数，默认 100
---timeout     每次模型请求及 bash 命令的默认超时，默认 2m
+--timeout     模型响应等待/空闲超时；bash 命令总时长上限，默认 2m
 --tools       read,list,write,edit,bash,save_plan,update_progress,search_history,read_history,request_user_input 的逗号列表；none 表示禁用
 --mode        default 或 plan
 --no-session  关闭会话保存
@@ -176,6 +178,8 @@ result, err := agent.Run(context.Background(), "解释 README", func(event iota.
     }
 })
 ```
+
+`openaicompat.Config.Timeout` 的零值使用默认 2 分钟，正值设置响应等待与读取空闲超时；负值报错。Provider 不设置模型流的总时长上限。调用方传入的 context 截止时间及自定义 `HTTPClient.Timeout` 仍然有效，若设置了总时长上限，持续输出也可能到期停止。空闲监测通过请求自己的取消 context 实现，不修改共享 HTTP client 或连接的截止时间。
 
 SDK 不读取配置文件、环境变量、`AGENTS.md` 或终端。只有 `cmd/iota` 处理 CLI 配置；SDK 调用者显式注入 Provider、模型、系统提示和工具。SDK 默认不注册工具。
 

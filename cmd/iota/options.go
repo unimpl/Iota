@@ -60,7 +60,7 @@ func parseOptionsWithConfig(args []string, stderr io.Writer, config fileConfig, 
 	flags.StringVar(&opts.system, "system", opts.system, "additional system prompt")
 	flags.StringVar(&opts.tools, "tools", opts.tools, "comma-separated tools, or none")
 	flags.IntVar(&opts.maxTurns, "max-turns", opts.maxTurns, "maximum model turns per run")
-	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "timeout for each model request and bash command")
+	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "model response wait/idle timeout and bash command duration limit")
 	flags.BoolVar(&opts.noSession, "no-session", opts.noSession, "disable saving conversations")
 	flags.StringVar(&opts.resume, "resume", opts.resume, "restore a session by path or UUID; use an empty value for the latest session")
 	flags.StringVar(&opts.mode, "mode", opts.mode, "collaboration mode: default or plan")
