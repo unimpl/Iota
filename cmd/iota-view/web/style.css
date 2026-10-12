@@ -89,7 +89,7 @@ pre { margin:10px 0 0; padding:14px; max-height:480px; overflow:auto; border-rad
 .mode-label { padding:5px 9px; border-radius:5px; color:var(--mode-ink); background:var(--mode-bg); font-size:12px; font-weight:600; }
 .current-mode { margin-left:auto; color:var(--muted); font-size:12px; }
 .event-list { list-style:none; margin:0; padding:0; }
-.event-entry { display:grid; grid-template-columns:92px 24px minmax(0,1fr); align-items:stretch; min-width:0; }
+.event-entry { display:grid; grid-template-columns:92px 24px minmax(0,1fr); align-items:stretch; min-width:0; content-visibility:auto; contain-intrinsic-size:auto 80px; }
 .event-entry[hidden] { display:none; }
 .event-rail { display:flex; flex-direction:column; align-items:flex-end; gap:4px; padding:18px 11px 12px 0; font:11px var(--mono); font-variant-numeric:tabular-nums; }
 .event-seq { color:var(--mode-ink); font-weight:700; }
@@ -138,6 +138,10 @@ pre { margin:10px 0 0; padding:14px; max-height:480px; overflow:auto; border-rad
 .tool-names { display:flex; flex-wrap:wrap; gap:6px; }
 .tool-name { padding:4px 7px; border-radius:5px; background:#f1ece2; color:#805c28; font:11px var(--mono); }
 .chunk-list { margin-top:10px; border-top:1px solid var(--line); }
+.chunk-pagination { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.chunk-pagination button { min-height:32px; padding:5px 9px; border:1px solid var(--line); border-radius:5px; background:var(--white); color:var(--green); }
+.chunk-pagination button:hover:not(:disabled) { background:var(--green-bg); }
+.chunk-pagination button:disabled { color:var(--muted); cursor:default; }
 .chunk-row { display:grid; grid-template-columns:190px minmax(0,1fr); gap:10px; padding:7px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
 .chunk-row > .disclosure { grid-column:1 / -1; margin:0; }
 .mono { color:var(--muted); font:11px var(--mono); }

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -18,7 +17,6 @@ import (
 	"sort"
 	"strings"
 	"syscall"
-	"time"
 )
 
 // webFiles 将静态页面嵌入可执行文件，查看器启动时不依赖外部资源目录。
@@ -195,67 +193,6 @@ func newHandler(folder string) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(sessions)
 	})
-	// 事件流只发送完整 JSONL 行；未写完的尾行留到下次轮询。
-	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
-		name := r.URL.Query().Get("name")
-		if !sessionFilename.MatchString(name) {
-			http.Error(w, "invalid session name", http.StatusBadRequest)
-			return
-		}
-		path := filepath.Join(folder, name)
-		info, err := os.Lstat(path)
-		if err != nil || !info.Mode().IsRegular() {
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer file.Close()
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, "streaming unavailable", http.StatusInternalServerError)
-			return
-		}
-		ticker := time.NewTicker(300 * time.Millisecond)
-		defer ticker.Stop()
-		var offset int64
-		for {
-			stat, err := file.Stat()
-			if err != nil {
-				return
-			}
-			if stat.Size() < offset {
-				offset = 0
-				fmt.Fprint(w, "event: reset\ndata: {}\n\n")
-				flusher.Flush()
-			}
-			if _, err := file.Seek(offset, io.SeekStart); err != nil {
-				return
-			}
-			reader := bufio.NewReader(file)
-			for {
-				line, err := reader.ReadBytes('\n')
-				if err != nil {
-					break // 未写完的一行留到下次读取，避免页面收到不完整 JSON。
-				}
-				offset += int64(len(line))
-				if json.Valid(line) {
-					fmt.Fprintf(w, "data: %s\n\n", line[:len(line)-1])
-					flusher.Flush()
-				}
-			}
-			select {
-			case <-r.Context().Done():
-				return
-			case <-ticker.C:
-			}
-		}
-	})
+	mux.HandleFunc("GET /api/events", eventsHandler(folder))
 	return mux
 }

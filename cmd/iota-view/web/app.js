@@ -1,5 +1,4 @@
-import { timelineModes } from './timeline-modes.js';
-import { contextState } from './context-state.js';
+import { TimelineState, reasoningChunk } from './timeline-state.js';
 import { usageLabel } from './context-usage.js';
 import { inputFromSummaryRequest } from './compaction-input.js';
 
@@ -27,8 +26,18 @@ let sessions = [];
 // selected 与 source 对应同一会话；切换时先关闭旧连接。
 let selected = null;
 let source = null;
-// records 只保存当前会话已收到的事件，重置通知会清空它。
-let records = [];
+let state = new TimelineState();
+const eventNodes = new Map();
+const turnRows = new Map();
+const streamUpdates = new WeakMap();
+let contextPanel = null;
+let contextVersion = -1;
+let list = null;
+let counts = null;
+let legendMode = null;
+let headerSession;
+let headerMetadata = null;
+let navigationSignature = '';
 // renderPending 防止密集流事件触发重复渲染。
 let renderPending = false;
 // 展开状态按事件和轮次分别记录，重绘后才能保持用户的查看位置。
@@ -36,6 +45,15 @@ const expanded = new Set();
 const expandedTurns = new Set();
 // Immutable snapshots are loaded on demand and reused while this session is selected.
 const summaryPreviews = new Map();
+
+function resetTimeline() {
+  state = new TimelineState();
+  eventNodes.clear();
+  turnRows.clear();
+  contextPanel = list = counts = legendMode = null;
+  contextVersion = -1;
+  timeline.replaceChildren();
+}
 
 // 侧栏切换同步更新无障碍状态，供键盘和屏幕阅读器使用。
 toggle.addEventListener('click', () => {
@@ -83,11 +101,77 @@ function disclosure(label, key, build) {
     loaded = true;
   };
   wrap.addEventListener('toggle', () => {
+    if (!wrap.isConnected) return;
     if (wrap.open) { expanded.add(key); load(); }
     else expanded.delete(key);
   });
   wrap.append(node('summary', '', label));
   if (wrap.open) load();
+  return wrap;
+}
+
+function liveTextDisclosure(label, value, key, active, updates) {
+  let pre;
+  const wrap = disclosure(label, key, () => {
+    const text = value();
+    pre = node('pre', '', typeof text === 'string' ? text : JSON.stringify(text, null, 2));
+    return pre;
+  });
+  const refresh = () => {
+    if (pre && wrap.open && active()) {
+      const text = value();
+      pre.textContent = typeof text === 'string' ? text : JSON.stringify(text, null, 2);
+    }
+  };
+  updates.push(refresh);
+  wrap.addEventListener('toggle', refresh);
+  return wrap;
+}
+
+// A streamed block can contain tens of thousands of raw fragments. Keep every
+// fragment accessible while limiting the DOM for its detail view to one page.
+function chunkDisclosure(label, key, item, buildRow, active, updates) {
+  let body;
+  let rows;
+  let status;
+  let previous;
+  let next;
+  let page = 0;
+  let shown = 0;
+  let follow = false;
+  const pageSize = 100;
+  const refresh = () => {
+    if (!body) return;
+    const lastPage = Math.max(0, Math.ceil(item.records.length / pageSize) - 1);
+    if (follow && page !== lastPage) { page = lastPage; shown = 0; rows.replaceChildren(); }
+    const start = page * pageSize;
+    const end = Math.min(start + pageSize, item.records.length);
+    for (let index = start + shown; index < end; index++) { rows.append(buildRow(item.records[index])); shown++; }
+    status.textContent = (start + 1) + '–' + end + ' / ' + item.records.length + ' 个片段';
+    previous.disabled = page === 0;
+    next.disabled = page === lastPage;
+  };
+  const selectPage = value => { page = value; follow = false; shown = 0; rows.replaceChildren(); refresh(); };
+  const wrap = disclosure(label, key, () => {
+    body = node('div');
+    const controls = node('div', 'chunk-pagination');
+    status = node('span', 'mono');
+    status.setAttribute('aria-live', 'polite');
+    previous = node('button', '', '上一页');
+    next = node('button', '', '下一页');
+    const latest = node('button', '', '最新片段');
+    for (const button of [previous, next, latest]) button.type = 'button';
+    previous.addEventListener('click', () => selectPage(page - 1));
+    next.addEventListener('click', () => selectPage(page + 1));
+    latest.addEventListener('click', () => { follow = true; refresh(); });
+    controls.append(status, previous, next, latest);
+    rows = node('div', 'chunk-list');
+    body.append(controls, rows);
+    refresh();
+    return body;
+  });
+  updates.push(() => { if (wrap.open && active()) refresh(); });
+  wrap.addEventListener('toggle', () => { if (wrap.open) refresh(); });
   return wrap;
 }
 
@@ -210,7 +294,7 @@ function updateSessions(next) {
     source?.close();
     source = null;
     selected = null;
-    records = [];
+    resetTimeline();
     expanded.clear();
     expandedTurns.clear();
     summaryPreviews.clear();
@@ -259,6 +343,9 @@ deleteConfirm.addEventListener('click', async () => {
 
 // renderSessionList 重新生成导航，并标明当前选中的会话。
 function renderSessionList() {
+  const signature = JSON.stringify([selected, sessions]);
+  if (signature === navigationSignature) return;
+  navigationSignature = signature;
   sessionNav.replaceChildren();
   if (!sessions.length) {
     sessionNav.append(node('p', 'side-empty', '暂无 session。运行 iota 后，记录会出现在这里。'));
@@ -307,7 +394,7 @@ function selectSession(name) {
   if (selected === name) return;
   source?.close();
   selected = name;
-  records = [];
+  resetTimeline();
   expanded.clear();
   expandedTurns.clear();
   summaryPreviews.clear();
@@ -315,13 +402,22 @@ function selectSession(name) {
   scheduleRender();
   setConnection('正在连接');
   source = new EventSource('/api/events?name=' + encodeURIComponent(name));
-  source.onopen = () => setConnection('实时跟随', 'live');
-  source.onerror = () => setConnection('连接中断，正在重试', 'error');
+  const currentSource = source;
+  source.onopen = () => { if (source === currentSource) setConnection('实时跟随', 'live'); };
+  source.onerror = () => { if (source === currentSource) setConnection('连接中断，正在重试', 'error'); };
   source.onmessage = event => {
-    try { records.push(JSON.parse(event.data)); scheduleRender(); }
+    if (source !== currentSource) return;
+    try {
+      const record = JSON.parse(event.data);
+      if (!record || typeof record.type !== 'string') throw new Error('invalid record');
+      if (state.append(record)) scheduleRender();
+    }
     catch { setConnection('记录格式有误', 'error'); }
   };
-  source.addEventListener('reset', () => { records = []; expanded.clear(); expandedTurns.clear(); summaryPreviews.clear(); scheduleRender(); });
+  source.addEventListener('reset', () => {
+    if (source !== currentSource) return;
+    resetTimeline(); expanded.clear(); expandedTurns.clear(); summaryPreviews.clear(); scheduleRender();
+  });
   if (window.innerWidth <= 700) {
     shell.classList.add('sidebar-hidden');
     toggle.setAttribute('aria-expanded', 'false');
@@ -329,116 +425,95 @@ function selectSession(name) {
   }
 }
 
-// scheduleRender 合并短时间内的多次流事件更新，减少重复构建整条时间线。
-function scheduleRender() {
+// Batch stream updates; initial history is rendered in bounded slices so input
+// and scrolling remain responsive while a large log is catching up.
+function scheduleRender(delay = 100) {
   if (renderPending) return;
   renderPending = true;
-  setTimeout(() => { renderPending = false; render(); }, 100);
+  setTimeout(() => { renderPending = false; render(); }, delay);
 }
 
-// reasoningChunk 兼容独立推理事件及旧日志中的原始流字段，避免重复显示推理内容。
-function reasoningChunk(record) {
-  if (record.type === 'reasoning_delta') return record.payload?.reasoning || '';
-  if (record.type !== 'model_stream_other') return '';
-  const raw = record.payload?.raw_chunk || '';
-  if (!raw.startsWith('data:')) return '';
-  try {
-    const chunk = JSON.parse(raw.slice(5).trim());
-    return (chunk.choices || []).map(choice => {
-      const delta = choice.delta || {};
-      if (typeof delta.reasoning === 'string' && delta.reasoning) return delta.reasoning;
-      if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) return delta.reasoning_content;
-      return (Array.isArray(delta.reasoning_details) ? delta.reasoning_details : [])
-        .filter(detail => typeof detail?.text === 'string').map(detail => detail.text).join('');
-    }).join('');
-  } catch {
-    return '';
-  }
-}
-
-// groupedEvents 仅合并同一任务、同一轮的连续片段，保留其他事件的原始顺序。
-function groupedEvents() {
-  const result = [];
-  for (const record of records) {
-    const previous = result.at(-1);
-    const reasoning = reasoningChunk(record);
-    const kind = record.type === 'compaction_delta' && !record.payload?.is_error && record.payload?.reason !== 'summary_complete' ? 'compaction_stream' : reasoning ? 'reasoning' : record.type;
-    if ((kind === 'text_delta' || kind === 'tool_call_delta' || kind === 'reasoning' || kind === 'compaction_stream') && previous?.kind === kind &&
-        previous.runID === record.run_id && previous.turn === record.payload?.turn) {
-      previous.records.push(record);
-      if (reasoning) previous.text += reasoning;
-    } else if (kind === 'text_delta' || kind === 'tool_call_delta' || kind === 'reasoning' || kind === 'compaction_stream') {
-      result.push({ kind, runID: record.run_id, turn: record.payload?.turn, records: [record], text: reasoning });
-    } else {
-      result.push({ kind: 'event', record });
-    }
-  }
-  return result;
-}
-
-// render 根据当前会话记录重建摘要和时间线，同时恢复展开状态。
+// Historical nodes are retained. Only new groups, the live tail and semantic
+// context changes are rendered; no scan over all earlier raw events is needed.
 function render() {
-  header.replaceChildren();
-  timeline.replaceChildren();
-  if (!selected) {
-    header.append(node('h1', '', '尚无 session'));
-    header.append(node('p', '', '运行 iota 后，这里会显示最近创建的 session。'));
+  if (headerSession !== selected || headerMetadata !== state.metadata) {
+    headerSession = selected;
+    headerMetadata = state.metadata;
+    header.replaceChildren();
+    if (!selected) {
+      header.append(node('h1', '', '尚无 session'));
+      header.append(node('p', '', '运行 iota 后，这里会显示最近创建的 session。'));
+    } else {
+      header.append(node('h1', '', 'Session 时间线'));
+      header.append(node('p', 'filename', selected));
+      const meta = state.metadata;
+      if (meta) {
+        const facts = node('div', 'header-meta');
+        facts.append(node('span', '', '模型 ' + (meta.payload?.model || '未知')));
+        facts.append(node('span', '', '创建于 ' + formatTime(meta.timestamp)));
+        facts.append(node('span', '', '目录 ' + (meta.payload?.cwd || '未知')));
+        header.append(facts);
+      }
+    }
+  }
+  if (!selected) return;
+  if (!state.events) {
+    if (!timeline.childElementCount) timeline.append(node('p', 'empty', '正在等待执行记录……'));
     return;
   }
-  header.append(node('h1', '', 'Session 时间线'));
-  header.append(node('p', 'filename', selected));
-  const meta = records.find(record => record.type === 'session_start');
-  if (meta) {
-    const facts = node('div', 'header-meta');
-    facts.append(node('span', '', '模型 ' + (meta.payload?.model || '未知')));
-    facts.append(node('span', '', '创建于 ' + formatTime(meta.timestamp)));
-    facts.append(node('span', '', '目录 ' + (meta.payload?.cwd || '未知')));
-    header.append(facts);
+  if (!list) {
+    timeline.replaceChildren();
+    contextPanel = renderContext(state.context.state);
+    contextVersion = state.contextVersion;
+    counts = node('div', 'timeline-counts');
+    counts.append(node('strong'), node('span'));
+    const legend = node('div', 'mode-legend');
+    legend.setAttribute('aria-label', '时间线模式图例');
+    legendMode = node('span', 'current-mode');
+    legend.append(node('span', 'mode-label mode-default', modeLabels.default), node('span', 'mode-label mode-plan', modeLabels.plan), legendMode);
+    list = node('ol', 'event-list');
+    timeline.append(contextPanel, counts, legend, list);
+  } else if (contextVersion !== state.contextVersion) {
+    const next = renderContext(state.context.state);
+    contextPanel.replaceWith(next);
+    contextPanel = next;
+    contextVersion = state.contextVersion;
   }
-  if (!records.length) {
-    timeline.append(node('p', 'empty', '正在等待执行记录……'));
-    return;
-  }
-  const effective = contextState(records);
-  timeline.append(renderContext(effective));
-  const counts = node('div', 'timeline-counts');
-  counts.append(node('strong', '', records.length + ' 条事件'));
-  counts.append(node('span', '', records.filter(item => item.type === 'run_start').length + ' 次任务 · ' +
-    records.filter(item => item.type === 'turn_start').length + ' 轮模型 · ' +
-    records.filter(item => item.type === 'tool_start').length + ' 次工具调用'));
-  timeline.append(counts);
-  const modes = timelineModes(records);
-  const currentMode = modes.get(records.at(-1)).mode;
-  const legend = node('div', 'mode-legend');
-  legend.setAttribute('aria-label', '时间线模式图例');
-  legend.append(node('span', 'mode-label mode-default', modeLabels.default));
-  legend.append(node('span', 'mode-label mode-plan', modeLabels.plan));
-  legend.append(node('span', 'current-mode', '最新模式：' + modeLabels[currentMode]));
-  timeline.append(legend);
-  const list = node('ol', 'event-list');
-  let activeTurn = null;
-  for (const item of groupedEvents()) {
-    const record = item.record || item.records[0];
-    const turn = record.payload?.turn;
-    const compaction = record.type.startsWith('compaction_') || record.type === 'context_compacted';
-    if (record.type === 'turn_start' && turn) {
-      activeTurn = { key: record.run_id + ':' + record.seq, runID: record.run_id, turn };
-    } else if (!activeTurn || record.run_id !== activeTurn.runID || turn !== activeTurn.turn || record.type === 'run_end') {
-      activeTurn = null;
+  counts.firstChild.textContent = state.events + ' 条事件';
+  counts.lastChild.textContent = state.counts.runs + ' 次任务 · ' + state.counts.turns + ' 轮模型 · ' + state.counts.tools + ' 次工具调用';
+  legendMode.textContent = '最新模式：' + modeLabels[state.mode];
+  const start = performance.now();
+  for (const item of state.dirty) {
+    state.dirty.delete(item);
+    const previous = eventNodes.get(item);
+    if (previous && previous.modeState === item.modeState && streamUpdates.has(previous.entry)) {
+      streamUpdates.get(previous.entry)();
+    } else {
+      const entry = renderEvent(item, item.turnKey, item.modeState);
+      if (item.inTurn) {
+        entry.dataset.turnKey = item.turnKey;
+        if (item.record.type === 'turn_start') entry.dataset.turnStart = 'true';
+        else entry.hidden = !expandedTurns.has(item.turnKey);
+        if (!turnRows.has(item.turnKey)) turnRows.set(item.turnKey, new Set());
+        turnRows.get(item.turnKey).add(entry);
+      }
+      if (previous) {
+        turnRows.get(item.turnKey)?.delete(previous.entry);
+        previous.entry.replaceWith(entry);
+      } else {
+        list.append(entry);
+      }
+      eventNodes.set(item, { entry, modeState: item.modeState });
     }
-    const entry = renderEvent(item, activeTurn?.key, list, modes.get(record));
-    if (activeTurn && !compaction) {
-      entry.dataset.turnKey = activeTurn.key;
-      if (record.type === 'turn_start') entry.dataset.turnStart = 'true';
-      else entry.hidden = !expandedTurns.has(activeTurn.key);
+    if (performance.now() - start >= 8) {
+      if (state.dirty.size) scheduleRender(0);
+      break;
     }
-    list.append(entry);
   }
-  timeline.append(list);
 }
 
 // renderEvent 按事件类型生成摘要；详细 JSON 保持可展开，避免默认淹没时间线。
-function renderEvent(item, turnKey, list, modeState) {
+function renderEvent(item, turnKey, modeState) {
   const record = item.record || item.records[0];
   const last = item.records?.at(-1) || record;
   const payload = record.payload || {};
@@ -461,7 +536,7 @@ function renderEvent(item, turnKey, list, modeState) {
         const open = !expandedTurns.has(turnKey);
         if (open) expandedTurns.add(turnKey);
         else expandedTurns.delete(turnKey);
-        for (const row of list.children) {
+        for (const row of turnRows.get(turnKey) || []) {
           if (row.dataset.turnKey === turnKey && row.dataset.turnStart !== 'true') row.hidden = !open;
         }
         button.setAttribute('aria-expanded', String(open));
@@ -477,6 +552,7 @@ function renderEvent(item, turnKey, list, modeState) {
   const eventKey = 'event-' + record.seq;
   content.open = expanded.has(eventKey);
   content.addEventListener('toggle', () => {
+    if (!content.isConnected) return;
     if (content.open) expanded.add(eventKey);
     else expanded.delete(eventKey);
   });
@@ -489,54 +565,55 @@ function renderEvent(item, turnKey, list, modeState) {
   const summary = (value, className = 'event-summary') => {
     if (value) content.append(node('p', className, value));
   };
+  const updates = [];
+  const attachStreamUpdates = () => {
+    const sequence = rail.querySelector('.event-seq');
+    const refresh = () => {
+      const last = item.records.at(-1);
+      sequence.textContent = record.seq === last.seq ? '#' + record.seq : '#' + record.seq + '–' + last.seq;
+      for (const update of updates) update();
+    };
+    streamUpdates.set(entry, refresh);
+    content.addEventListener('toggle', () => { if (content.open && content.isConnected) refresh(); });
+    return entry;
+  };
 
   if (item.kind === 'compaction_stream') {
     badge.textContent = 'SUMMARY';
     title.textContent = '正在生成压缩摘要 · ' + item.records.length + ' 个片段';
-    content.append(textDisclosure('查看摘要生成过程', item.records.map(part => part.payload?.text || part.payload?.reasoning || '').join(''), 'compaction-stream-' + record.seq));
-    content.append(disclosure('查看摘要原始流事件', 'compaction-chunks-' + record.seq, () => {
-      const body = node('div', 'chunk-list');
-      for (const part of item.records) body.append(jsonDisclosure(part));
-      return body;
-    }));
-    return entry;
+    updates.push(() => { title.textContent = '正在生成压缩摘要 · ' + item.records.length + ' 个片段'; });
+    content.append(liveTextDisclosure('查看摘要生成过程', () => item.text, 'compaction-stream-' + record.seq, () => content.open, updates));
+    content.append(chunkDisclosure('查看摘要原始流事件', 'compaction-chunks-' + record.seq, item, jsonDisclosure, () => content.open, updates));
+    return attachStreamUpdates();
   }
   if (item.kind === 'text_delta' || item.kind === 'tool_call_delta' || item.kind === 'reasoning') {
     const isToolCall = item.kind === 'tool_call_delta';
     const isReasoning = item.kind === 'reasoning';
     badge.textContent = isReasoning ? 'REASON' : 'STREAM';
     title.textContent = isReasoning ? '模型推理逐段到达' : isToolCall ? '工具调用逐段到达' : '模型文本逐段到达';
-    summary(item.records.length + ' 个片段 · 第 ' + item.turn + ' 轮。' +
-      (isReasoning ? '连续的推理片段已合并。' : isToolCall ? '完整工具调用会在稍后写入对话。' : '完整回复会在稍后写入对话。'));
+    const streamSummary = node('p', 'event-summary');
+    content.append(streamSummary);
+    const updateSummary = () => { streamSummary.textContent = item.records.length + ' 个片段 · 第 ' + item.turn + ' 轮。' +
+      (isReasoning ? '连续的推理片段已合并。' : isToolCall ? '完整工具调用会在稍后写入对话。' : '完整回复会在稍后写入对话。');
+    };
+    updateSummary();
+    updates.push(updateSummary);
     if (isToolCall) {
-      const calls = new Map();
-      for (const part of item.records) {
-        const delta = part.payload?.tool_call_delta || {};
-        const call = calls.get(delta.index) || { index: delta.index, id: '', name: '', arguments: '' };
-        if (delta.id) call.id = delta.id;
-        call.name += delta.name || '';
-        call.arguments += delta.arguments || '';
-        calls.set(delta.index, call);
-      }
-      content.append(textDisclosure('查看生成中的工具调用', [...calls.values()], 'stream-' + record.seq));
+      content.append(liveTextDisclosure('查看生成中的工具调用', () => [...item.calls.values()], 'stream-' + record.seq, () => content.open, updates));
     } else if (isReasoning) {
-      content.append(textDisclosure('查看推理内容', item.text, 'reasoning-' + record.seq));
+      content.append(liveTextDisclosure('查看推理内容', () => item.text, 'reasoning-' + record.seq, () => content.open, updates));
     } else {
-      content.append(textDisclosure('查看生成中的文字', item.records.map(part => part.payload?.text || '').join(''), 'stream-' + record.seq));
+      content.append(liveTextDisclosure('查看生成中的文字', () => item.text, 'stream-' + record.seq, () => content.open, updates));
     }
-    content.append(disclosure('查看各片段的序号、时间和 JSON', 'chunks-' + record.seq, () => {
-      const rows = node('div', 'chunk-list');
-      for (const part of item.records) {
+    content.append(chunkDisclosure('查看各片段的序号、时间和 JSON', 'chunks-' + record.seq, item, part => {
         const row = node('div', 'chunk-row');
         row.append(node('span', 'mono', '#' + part.seq + ' · ' + clockTime(part.timestamp)));
         row.append(node('span', '', JSON.stringify(isReasoning ? reasoningChunk(part) : isToolCall ? part.payload?.tool_call_delta || {} : part.payload?.text || '')));
         if (part.payload?.raw_chunk) row.append(rawStreamDisclosure(part));
         row.append(jsonDisclosure(part));
-        rows.append(row);
-      }
-      return rows;
-    }));
-    return entry;
+        return row;
+    }, () => content.open, updates));
+    return attachStreamUpdates();
   }
 
   switch (record.type) {
