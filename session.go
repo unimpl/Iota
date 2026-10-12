@@ -39,6 +39,7 @@ type Session struct {
 	summaryDir         string
 	history            []Message
 	resetSeq           uint64
+	activeSkills       []SkillActivation
 }
 
 // sessionRecord 是单行 JSONL 的固定外壳；保留查看器使用的事件结构。
@@ -111,6 +112,7 @@ func (s *Session) Run(ctx context.Context, agent *Agent, prompt string, emit Emi
 	err := s.checkOpen()
 	messages := cloneMessages(s.messages)
 	state := cloneCollaboration(s.collaboration)
+	skills := cloneSkillActivations(s.activeSkills)
 	newSession := s.seq == 1
 	s.mu.Unlock()
 	if err != nil {
@@ -118,6 +120,9 @@ func (s *Session) Run(ctx context.Context, agent *Agent, prompt string, emit Emi
 	}
 	if !reflect.DeepEqual(agent.Messages(), messages) {
 		return RunResult{}, errors.New("agent history differs from session; call Session.Restore first")
+	}
+	if !reflect.DeepEqual(agent.ActiveSkills(), skills) {
+		return RunResult{}, errors.New("agent skills differ from session; call Session.Restore first")
 	}
 	agentState := agent.Collaboration()
 	if !reflect.DeepEqual(agentState, state) {
@@ -140,7 +145,7 @@ func (s *Session) Run(ctx context.Context, agent *Agent, prompt string, emit Emi
 	defer cancel()
 	result, runErr := agent.run(ctx, prompt, func(event Event) {
 		// State checkpoints were durably recorded before being published.
-		if !isCollaborationEvent(event.Type) && event.Type != EventContextCompacted && event.Type != EventMessageAdded {
+		if !isCollaborationEvent(event.Type) && !isSkillEvent(event.Type) && event.Type != EventContextCompacted && event.Type != EventMessageAdded {
 			if err := s.write(runID, string(event.Type), event); err != nil {
 				cancel()
 			}
@@ -182,6 +187,7 @@ func (s *Session) Restore(agent *Agent) error {
 	}
 	agent.messages = cloneMessages(s.messages)
 	agent.collaboration = cloneCollaboration(s.collaboration)
+	agent.activeSkills = cloneSkillActivations(s.activeSkills)
 	agent.history = s
 	agent.contextLimitTokens = 0
 	if agent.model == s.contextLimitModel {
@@ -214,6 +220,7 @@ func (s *Session) Reset(agent *Agent) error {
 		return err
 	}
 	agent.messages = nil
+	agent.activeSkills = nil
 	agent.collaboration.Plan = nil
 	agent.collaboration.Progress = nil
 	agent.collaboration.Approval = nil
@@ -277,6 +284,15 @@ func (s *Session) write(runID, kind string, payload any) error {
 			return err
 		}
 	}
+	if isSkillEvent(EventType(kind)) {
+		event, ok := payload.(Event)
+		if !ok || string(event.Type) != kind {
+			return errors.New("invalid skill event")
+		}
+		if err := validateSkillEvent(event); err != nil {
+			return err
+		}
+	}
 	if EventType(kind) == EventContextCompacted {
 		event, ok := payload.(Event)
 		if !ok || event.Type != EventContextCompacted || event.Compaction == nil {
@@ -314,10 +330,13 @@ func (s *Session) write(runID, kind string, payload any) error {
 	s.seq++
 	if kind == "session_reset" {
 		s.messages = nil
+		s.activeSkills = nil
 		s.collaboration.Plan = nil
 		s.collaboration.Progress = nil
 		s.collaboration.Approval = nil
 		s.resetSeq = s.seq
+	} else if event, ok := payload.(Event); ok && event.Type == EventSkillActivated {
+		s.activeSkills = replaceSkillActivation(s.activeSkills, *event.Skill)
 	} else if event, ok := payload.(Event); ok && event.Type == EventContextCompacted {
 		s.messages = cloneMessages(event.Compaction.Context.Messages)
 		s.contextLimitTokens = event.Compaction.ContextLimitTokens
@@ -345,12 +364,13 @@ func (s *Session) Compact(ctx context.Context, agent *Agent, instructions string
 	err := s.checkOpen()
 	messages := cloneMessages(s.messages)
 	state := cloneCollaboration(s.collaboration)
+	skills := cloneSkillActivations(s.activeSkills)
 	newSession := s.seq == 1
 	s.mu.Unlock()
 	if err != nil {
 		return CompactionState{}, err
 	}
-	if !reflect.DeepEqual(agent.Messages(), messages) || (!newSession && !reflect.DeepEqual(agent.Collaboration(), state)) {
+	if !reflect.DeepEqual(agent.Messages(), messages) || !reflect.DeepEqual(agent.ActiveSkills(), skills) || (!newSession && !reflect.DeepEqual(agent.Collaboration(), state)) {
 		return CompactionState{}, errors.New("agent state differs from session; call Session.Restore first")
 	}
 	ctx, cancel := context.WithCancel(ctx)

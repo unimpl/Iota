@@ -37,6 +37,7 @@ type Message struct {
 	Source         *MessageSource    `json:"source,omitempty"`
 	Sources        []SourceRange     `json:"sources,omitempty"`
 	Checkpoint     *CompactionMemory `json:"checkpoint,omitempty"`
+	Skill          *SkillReference   `json:"skill,omitempty"`
 }
 
 // MessageSource points to an original message_added event in this session.
@@ -73,6 +74,7 @@ type Tool struct {
 	planTool      bool
 	historyTool   bool
 	userInputTool bool
+	skillTool     bool
 }
 
 // Request 汇集单轮模型请求；Messages 应保持对话和工具结果的原始顺序。
@@ -159,6 +161,10 @@ const (
 	EventCompactionProgress EventType = "compaction_progress"
 	EventCompactionEnd      EventType = "compaction_end"
 	EventContextCompacted   EventType = "context_compacted"
+	EventSkillsReloaded     EventType = "skills_reloaded"
+	EventSkillActivated     EventType = "skill_activated"
+	EventSkillResourceRead  EventType = "skill_resource_read"
+	EventSkillInstalled     EventType = "skill_installed"
 )
 
 // Event 是观察和会话日志的统一记录；字段按 Type 选择性填充。
@@ -182,6 +188,10 @@ type Event struct {
 	Compaction         *CompactionState    `json:"compaction,omitempty"`
 	CompactionInput    *CompactionInput    `json:"compaction_input,omitempty"`
 	CompactionProgress *CompactionProgress `json:"compaction_progress,omitempty"`
+	Skills             *SkillCatalog       `json:"skills,omitempty"`
+	Skill              *SkillActivation    `json:"skill,omitempty"`
+	SkillRead          *SkillResourceRead  `json:"skill_read,omitempty"`
+	SkillInstall       *SkillInstallation  `json:"skill_install,omitempty"`
 }
 
 // EmitFunc 接收同步发出的事件；回调应尽快返回，避免阻塞执行循环。

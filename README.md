@@ -29,7 +29,7 @@ base_url = "https://api.openai.com/v1"
 api_key = "$API_KEY" # 运行时读取该环境变量，不把凭据写入文件
 cwd = "."
 system = "回答前先读取相关文件。"
-tools = ["read", "list", "write", "edit", "bash", "save_plan", "update_progress", "search_history", "read_history", "request_user_input"]
+tools = ["read", "list", "write", "edit", "bash", "save_plan", "update_progress", "search_history", "read_history", "request_user_input", "read_skill", "read_skill_resource", "install_skill"]
 mode = "default" # plan 表示先探索和编写计划
 max_turns = 100
 timeout = "2m" # 模型响应等待/空闲超时；bash 命令总时长上限
@@ -44,7 +44,41 @@ CLI 支持 `~/.iota/SYSTEM.md` 和工作目录中的 `.iota/SYSTEM.md`：找到�
 
 `timeout`、`IOTA_TIMEOUT` 和 `--timeout` 对模型请求限制的是等待响应及连续没有收到响应数据的时间，默认 2 分钟。收到响应头后重新计时，随后每次读到响应字节都会重置计时，包括正文、推理、SSE 心跳和尚未收完整的事件。持续输出可以超过 2 分钟；无数据时取消该请求，错误明确标注 `response idle timeout`，不接受不完整的回复或执行其中的工具调用。同一设置对 bash 仍表示命令的总时长上限。
 
-交互模式逐行接收任务，支持 `/reset`、`/compact [摘要重点]`、`/exit` 和下述规划命令。模型文本写入 stdout，推理、提示符、工具状态和错误写入 stderr。
+交互模式逐行接收任务，支持 `/reset`、`/compact [摘要重点]`、`/skill [list|reload|install <提示词>]`、`/exit` 和下述规划命令。模型文本写入 stdout，推理、提示符、工具状态和错误写入 stderr。
+
+### Skills
+
+SDK 在创建 Agent 时扫描 `~/.iota/skills` 下的技能目录，将标准 [Agent Skills](https://agentskills.io/specification) 的元数据和 `SKILL.md` 原文注册到内存。每个技能放在 `~/.iota/skills/<name>/SKILL.md`，可附带 `references/`、`scripts/`、`assets/` 等文件；支持链接到技能目录的符号链接。发现过程不创建目录或下载技能。复制或链接技能目录后，在交互 CLI 输入 `/skill reload` 即可重新加载，无需重启；`/skill` 或 `/skill list` 查看技能及加载诊断。
+
+`/skill install <提示词>` 提交一条安装任务，例如 `/skill install 安装一个用于 Go 代码审查的 skill`，或提供技能来源 URL、本地目录及选择条件。SDK 保留原始命令作为用户消息，首次请求附加安装流程指令；CLI 使用普通执行流程处理输出和取消。模型通过 `bash` 执行 `curl`、`wget`、`git` 或解压命令，将包含 `SKILL.md`、引用、脚本与资产的完整技能包准备到临时目录，再调用：
+
+```json
+{"source_dir":"/tmp/downloaded-skill"}
+```
+
+`install_skill` 只接受本地绝对目录，负责校验标准格式、根据元数据名称复制到 `~/.iota/skills/<name>`、记录安装事件，并立即刷新内存注册表。临时源目录名称可以不同于技能名称，目标目录由 SDK 选择。安装成功后的下一轮请求即包含新技能目录和读取工具；无需额外 `/skill reload`，也不会自动激活新技能。该工具在没有任何已安装技能时仍开放，Default 模式可安装，Plan 模式不可安装。
+
+安装保留二进制资产和脚本执行位，跳过 `.git`，不下载、不执行包内脚本或安装依赖。已有目标目录拒绝覆盖；资源符号链接和特殊文件拒绝安装，包大小最多 128 MiB，文件与目录最多 4096 项。正文与资源在暂存目录准备好后，最后发布 `SKILL.md`，避免扫描到不完整包；失败时清理本次目标和暂存目录，保留源目录及已有技能。
+
+```markdown
+---
+name: code-review
+description: Review code changes for correctness and regressions.
+---
+Read the changed files in full, then report actionable findings.
+```
+
+前置 YAML 支持 `name`、`description`、`license`、`compatibility`、`metadata` 和 `allowed-tools`。名称必须与目录一致，使用 1–64 个小写 Unicode 字母、数字和单个连字符，按标准参考实现进行 NFKC 规范化；描述是非空字符串，最多 1024 个字符。非法技能会被跳过并显示诊断；目录读取失败则保留旧注册表。`allowed-tools` 作为元数据保留，不授予权限或改变当前模式。
+
+输入 `请使用 $skill:code-review 检查修改`，SDK 会保留原始输入，并在首次模型请求前加载完整正文；支持同一输入选择多个技能，重复提及只加载一次。未知或非法技能名会报错，整条输入不会加入历史；`\$skill:code-review` 可作为字面量输入。模型隐式使用时，根据系统提示中的名称和描述选择技能，调用 `read_skill` 加载完整指令。完整技能正文不会作为整个目录的系统提示预先注入。
+
+`read_skill_resource` 接受已激活技能名和相对路径，按需读取引用文件或脚本源码；不执行脚本。路径与符号链接不能越出该技能目录，只接受不超过 1 MiB 的 UTF-8 文本。二进制资产及脚本执行使用现有文件/执行工具，仍受协作模式和工具配置约束。两个读取工具和 `install_skill` 默认在 CLI 启用，在 Plan 与 Default 都可读取；`--tools none` 同时禁用模型的技能工具及安装子命令，显式技能选择仍由 SDK 处理。
+
+技能激活记录为 `skill_activated`，包含 `source: user|model`、路径、正文 SHA-256 和完整原文。资源读取记录为 `skill_resource_read`，注册表重载记录为 `skills_reloaded`；安装记录为 `skill_installed`，包含源目录、安装位置、正文哈希与刷新后的技能目录。调用与失败另有普通工具事件。启用 Session 时写入 JSONL，无 Session 时由 SDK 回调接收。恢复会话不会重新安装历史技能。
+
+已激活技能的原文版本独立于摘要保存：旧工具结果裁剪跳过技能正文；正文被摘要移出历史后，SDK 在临时运行时消息中恢复完整原文，正文仍在历史中时不重复注入。摘要只记录用户选择、相关决定和工作进度，不改写技能步骤。恢复会话使用当时记录的版本，即使磁盘技能已修改或删除也能继续；`/skill reload` 更新后续激活使用的版本，再次显式选择或调用 `read_skill` 才替换活动版本。引用资源按读取时的磁盘内容返回，可在压缩后重新读取。
+
+活动技能保留至 `/reset`，只适用于相关任务，不将旧技能任务自动带入新请求。完整正文计入压缩预算；必要指令本身超出窗口时明确报错，不静默丢弃。
 
 ### 上下文压缩
 
@@ -140,13 +174,13 @@ go run ./cmd/iota-view --folder /path/to/sessions
 --system      附加系统提示
 --max-turns   每次运行最多模型轮数，默认 100
 --timeout     模型响应等待/空闲超时；bash 命令总时长上限，默认 2m
---tools       read,list,write,edit,bash,save_plan,update_progress,search_history,read_history,request_user_input 的逗号列表；none 表示禁用
+--tools       read,list,write,edit,bash,save_plan,update_progress,search_history,read_history,request_user_input,read_skill,read_skill_resource,install_skill 的逗号列表；none 表示禁用
 --mode        default 或 plan
 --no-session  关闭会话保存
 --resume      按路径或 UUID 恢复会话；传空字符串时恢复最近修改的会话
 ```
 
-CLI 默认配置文件工具、`save_plan`、`update_progress`、两个历史工具和 `request_user_input`；实际开放的工具由当前模式、Session 及交互能力决定。工具使用当前进程权限；规划模式的工具检查不是操作系统沙箱。
+CLI 默认配置文件工具、`save_plan`、`update_progress`、两个历史工具、`request_user_input` 和三个技能工具；实际开放的工具由当前模式、Session、已安装技能及交互能力决定。工具使用当前进程权限；规划模式的工具检查不是操作系统沙箱。
 
 ## SDK
 
@@ -181,7 +215,13 @@ result, err := agent.Run(context.Background(), "解释 README", func(event iota.
 
 `openaicompat.Config.Timeout` 的零值使用默认 2 分钟，正值设置响应等待与读取空闲超时；负值报错。Provider 不设置模型流的总时长上限。调用方传入的 context 截止时间及自定义 `HTTPClient.Timeout` 仍然有效，若设置了总时长上限，持续输出也可能到期停止。空闲监测通过请求自己的取消 context 实现，不修改共享 HTTP client 或连接的截止时间。
 
-SDK 不读取配置文件、环境变量、`AGENTS.md` 或终端。只有 `cmd/iota` 处理 CLI 配置；SDK 调用者显式注入 Provider、模型、系统提示和工具。SDK 默认不注册工具。
+SDK 不读取 CLI 配置文件、配置环境变量、`AGENTS.md` 或终端。只有 `cmd/iota` 处理 CLI 配置；SDK 调用者显式注入 Provider、模型、系统提示和工具。SDK 默认不注册工具。
+
+技能发现默认使用当前用户的 `~/.iota/skills`；`Config.SkillsDir` 可以指定其他目录，`Config.DisableSkills` 禁用发现、新激活和安装。SDK 调用方在 `Config.Tools` 注册 `iota.NewReadSkillTool()`、`iota.NewReadSkillResourceTool()`，才开放模型的隐式使用和资源读取；注册 `iota.NewInstallSkillTool()` 开放模型安装。显式 `$skill:name` 由 `Run` 处理。`agent.Skills()` 返回可用技能与诊断的独立副本，`agent.ActiveSkills()` 返回已激活的原文快照。
+
+无持久化时调用 `agent.ReloadSkills(ctx, emit)`，启用 Session 时调用 `session.ReloadSkills(ctx, agent, emit)`，运行或压缩期间返回 `ErrBusy`。`agent.HandleSkillCommand(ctx, line, session, emit)` 返回 `SkillCommandResult` 和错误：`Handled` 表示已处理，`Output` 用于本地展示，`Prompt` 非空时由调用方交给 `Run` 或 `Session.Run`。SDK 负责 `/skill [list|reload|install <提示词>]` 的语法和任务准备，CLI 负责调用、展示及正常模型运行。安装命令内的 `$skill:name` 表示待安装目标，不在安装前激活。原文快照随 Session 恢复，注册表仍按当前配置重新发现。
+
+调用方已有本地包时可直接使用 `agent.InstallSkill(ctx, sourceDir, emit)`；启用持久化时使用 `session.InstallSkill(ctx, agent, sourceDir, emit)`。这些 API 不调用模型、不下载，仅校验、复制、记录和刷新目录，返回 `SkillInstallation`。API 只在 Default 模式空闲时使用，忙时返回 `ErrBusy`；模型工具在当前 Run 内调用同一安装实现。
 
 SDK 使用规划工具时，在 `Config.Tools` 中注册 `iota.NewSavePlanTool()`、`iota.NewUpdateProgressTool()`，并通过 `Config.PlansDir` 明确提供计划目录；可通过 `Config.Mode` 选择初始模式。自定义工具只有标记 `ReadOnly: true` 才能在规划模式执行，这个标记的真实性由工具实现方负责。
 
@@ -265,6 +305,7 @@ flowchart LR
 | `tool.go` | 工具调用校验、参数校验与执行，以及工具 schema 的引用检查 |
 | `user_input.go`、`cmd/iota/user_input.go` | 结构化提问、SDK 回调、交互输入与取消 |
 | `messages.go` | 读取和清空历史，以及消息与工具调用的独立副本 |
+| `skills.go`、`skill_tools.go`、`skill_install.go` | 标准技能发现、注册表重载、显式选择、读取工具、本地包安装、事件和正文恢复 |
 | `compaction.go`、`context_overflow.go`、`model_request.go` | 分阶段压缩、超限错误识别、摘要及模型请求 |
 | `context_usage.go`、`summary_snapshot.go` | 上下文用量估算和按检查点保存的 Markdown 摘要快照 |
 | `collaboration.go`、`plan_file.go` | 内置协作模式、计划工具、文件保存与计划批准 |

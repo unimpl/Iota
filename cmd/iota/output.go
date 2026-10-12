@@ -74,6 +74,14 @@ func (o *eventOutput) emit(event iota.Event) {
 		o.assistantOpen = false
 	}
 	switch event.Type {
+	case iota.EventSkillInstalled:
+		if event.SkillInstall != nil {
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "skill installed: "+event.SkillInstall.Skill.Name+" ("+event.SkillInstall.Skill.Path+")"))
+		}
+	case iota.EventSkillActivated:
+		if event.Skill != nil {
+			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "skill: "+event.Skill.Skill.Name+" ("+event.Skill.Source+")"))
+		}
 	case iota.EventCompactionStart:
 		message := "compacting context (" + event.Reason + ")"
 		if state := event.Compaction; state != nil {

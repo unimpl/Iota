@@ -19,6 +19,7 @@ func (a *Agent) Reset() error {
 		return ErrBusy
 	}
 	a.messages = nil
+	a.activeSkills = nil
 	a.collaboration.Plan = nil
 	a.collaboration.Progress = nil
 	a.collaboration.Approval = nil
@@ -55,6 +56,10 @@ func cloneToolCallPointer(call ToolCall) *ToolCall {
 func cloneMessagePointer(message Message) *Message {
 	copy := message
 	copy.ToolCalls = cloneToolCalls(message.ToolCalls)
+	if message.Skill != nil {
+		skill := *message.Skill
+		copy.Skill = &skill
+	}
 	if message.Source != nil {
 		source := *message.Source
 		copy.Source = &source

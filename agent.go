@@ -32,13 +32,17 @@ type Agent struct {
 	systemPromptLoader    func(context.Context) (string, error)
 	contextLimitTokens    int
 	userInputHandler      UserInputHandler
+	skills                skillRegistry
+	skillsDisabled        bool
+	activeSkills          []SkillActivation
 
-	mu            sync.Mutex
-	running       bool
-	messages      []Message
-	collaboration CollaborationState
-	runTurn       int
-	history       *Session
+	mu              sync.Mutex
+	running         bool
+	messages        []Message
+	collaboration   CollaborationState
+	runTurn         int
+	runSkillInstall bool
+	history         *Session
 }
 
 // Run 执行一次用户输入，逐轮请求模型并按顺序执行工具，直到模型给出最终回复。
@@ -55,6 +59,7 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 		return RunResult{}, ErrBusy
 	}
 	a.running = true
+	_, a.runSkillInstall = skillInstallArgument(prompt)
 	userMessage := Message{Role: RoleUser, Content: prompt}
 	a.mu.Unlock()
 	var runMessages []Message
@@ -74,6 +79,7 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 		result.Messages = cloneMessages(runMessages)
 		a.running = false
 		a.runTurn = 0
+		a.runSkillInstall = false
 		a.mu.Unlock()
 		if runErr == nil && result.StopReason != "" {
 			reason = result.StopReason
@@ -86,8 +92,40 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 		}
 		emitEvent(emit, end)
 	}()
+	// Resolve the whole explicit selection before changing conversation state.
+	var names []string
+	if argument, install := skillInstallArgument(prompt); install {
+		if argument == "" || !a.skillInstallationAvailable() {
+			return result, errors.New("/skill install requires a prompt and install_skill in default mode with skills enabled")
+		}
+	} else {
+		var err error
+		names, err = explicitSkillNames(prompt)
+		if err != nil {
+			return result, err
+		}
+	}
+	activations := make([]SkillActivation, 0, len(names))
+	for _, name := range names {
+		activation, err := a.skillActivation(name, "user")
+		if err != nil {
+			return result, err
+		}
+		activations = append(activations, activation)
+	}
 	if err := a.appendMessage(userMessage, 0, emit, record); err != nil {
 		return result, err
+	}
+	for _, activation := range activations {
+		if err := a.activateSkill(ctx, activation, 0, emit, record); err != nil {
+			return result, err
+		}
+		if skillInstructionsPresent(a.Messages(), activation) {
+			continue
+		}
+		if err := a.appendMessage(Message{Role: RoleUser, Content: renderSkill(activation), Skill: &SkillReference{Name: activation.Skill.Name, Hash: activation.Hash}}, 0, emit, record); err != nil {
+			return result, err
+		}
 	}
 
 	for turn := 1; turn <= a.maxTurns; turn++ {
@@ -147,6 +185,14 @@ func (a *Agent) run(ctx context.Context, prompt string, emit EmitFunc, record fu
 			}
 			text, isError, abortErr := a.executeTool(ctx, call, turn, emit, record, inputIndex, inputCalls)
 			toolMessage := Message{Role: RoleTool, Content: text, ToolCallID: call.ID, ToolName: call.Name, IsError: isError}
+			if !isError && call.Name == "read_skill" {
+				for _, activation := range a.ActiveSkills() {
+					if text == renderSkill(activation) {
+						toolMessage.Skill = &SkillReference{Name: activation.Skill.Name, Hash: activation.Hash}
+						break
+					}
+				}
+			}
 			if err := a.appendMessage(toolMessage, turn, emit, record); err != nil {
 				return result, err
 			}

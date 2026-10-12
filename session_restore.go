@@ -72,6 +72,7 @@ func (s *Session) read() error {
 			return errors.New("legacy plan_updated event is unsupported; execution progress now uses progress_updated")
 		case "session_reset":
 			s.messages = nil
+			s.activeSkills = nil
 			s.collaboration.Plan = nil
 			s.collaboration.Progress = nil
 			s.collaboration.Approval = nil
@@ -85,6 +86,17 @@ func (s *Session) read() error {
 				return fmt.Errorf("invalid collaboration event at record %d: %w", s.seq, err)
 			}
 			s.collaboration = cloneCollaboration(*event.Collaboration)
+		case string(EventSkillActivated), string(EventSkillsReloaded), string(EventSkillResourceRead), string(EventSkillInstalled):
+			var event Event
+			if err := json.Unmarshal(record.Payload, &event); err != nil || string(event.Type) != record.Type {
+				return fmt.Errorf("invalid skill event at record %d", s.seq)
+			}
+			if err := validateSkillEvent(event); err != nil {
+				return fmt.Errorf("invalid skill event at record %d: %w", s.seq, err)
+			}
+			if event.Type == EventSkillActivated {
+				s.activeSkills = replaceSkillActivation(s.activeSkills, *event.Skill)
+			}
 		case string(EventMessageAdded):
 			var event Event
 			if err := json.Unmarshal(record.Payload, &event); err != nil || event.Message == nil || event.Type != EventMessageAdded {

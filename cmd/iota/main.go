@@ -96,6 +96,9 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	for _, diagnostic := range agent.Skills().Diagnostics {
+		printLine(stderr, colorError, "iota: skipped skill "+diagnostic.Path+": "+diagnostic.Error)
+	}
 	if opts.prompt != "" && !terminal {
 		printLine(stderr, colorError, "iota: -p cannot be combined with piped standard input")
 		return 2

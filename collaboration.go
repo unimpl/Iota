@@ -216,6 +216,12 @@ func (a *Agent) toolAllowed(tool Tool) bool {
 	if tool.userInputTool {
 		return a.userInputHandler != nil
 	}
+	if tool.skillTool {
+		a.mu.Lock()
+		available := !a.skillsDisabled && (tool.Name == "install_skill" || len(a.skills.byName) > 0 || (tool.Name == "read_skill_resource" && len(a.activeSkills) > 0))
+		a.mu.Unlock()
+		return available && (mode == ModeDefault || tool.ReadOnly)
+	}
 	if tool.historyTool {
 		a.mu.Lock()
 		available := a.history != nil
@@ -233,7 +239,17 @@ func (a *Agent) activeToolDefinitions() []ToolDefinition {
 	for _, compiled := range a.tools {
 		tool := compiled.tool
 		if a.toolAllowed(tool) {
-			definitions = append(definitions, ToolDefinition{Name: tool.Name, Description: tool.Description, Schema: append(json.RawMessage(nil), tool.Schema...)})
+			definition := ToolDefinition{Name: tool.Name, Description: tool.Description, Schema: append(json.RawMessage(nil), tool.Schema...)}
+			if tool.skillTool && tool.Name == "read_skill" {
+				catalog := a.Skills()
+				names := make([]string, len(catalog.Skills))
+				for i, skill := range catalog.Skills {
+					names[i] = skill.Name
+				}
+				enum, _ := json.Marshal(names)
+				definition.Schema = json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","enum":` + string(enum) + `}},"required":["name"],"additionalProperties":false}`)
+			}
+			definitions = append(definitions, definition)
 		}
 	}
 	return definitions
@@ -280,9 +296,9 @@ User input is unavailable in this run. Do not call request_user_input or ask que
 		}
 	}
 	if base == "" {
-		return guidance, nil
+		return guidance + a.skillsPrompt(), nil
 	}
-	return base + "\n\n" + guidance, nil
+	return base + "\n\n" + guidance + a.skillsPrompt(), nil
 }
 
 // NewSavePlanTool declares the Agent-owned planning tool; its target path is never supplied by the model.

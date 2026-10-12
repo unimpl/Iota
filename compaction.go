@@ -114,6 +114,7 @@ func modelVisibleRequest(request Request) Request {
 		request.Messages[i].Source = nil
 		request.Messages[i].Sources = nil
 		request.Messages[i].Checkpoint = nil
+		request.Messages[i].Skill = nil
 	}
 	return request
 }
@@ -195,7 +196,7 @@ func (a *Agent) compact(ctx context.Context, instructions, trigger string, force
 	state.Context.Messages = cloneMessages(request.Messages)
 	if limit > 0 {
 		protected := request
-		protected.Messages = append(cloneMessages(request.Messages[cut:]), a.runtimeMessage())
+		protected.Messages = append(cloneMessages(request.Messages[cut:]), a.runtimeMessageFor(request.Messages[cut:]))
 		usage := estimateContextUsage(protected, limit)
 		if usage.Tokens >= limit {
 			return state, fmt.Errorf("protected recent history and authoritative state require approximately %d tokens, exceeding reported capacity %d; history was preserved", usage.Tokens, limit)
@@ -204,7 +205,7 @@ func (a *Agent) compact(ctx context.Context, instructions, trigger string, force
 	// The detached request can be edited without changing Agent state on failure.
 	for i := 0; i < cut; i++ {
 		message := &state.Context.Messages[i]
-		if message.Role != RoleTool {
+		if message.Role != RoleTool || message.Skill != nil {
 			continue
 		}
 		text := []rune(message.Content)
@@ -221,7 +222,7 @@ func (a *Agent) compact(ctx context.Context, instructions, trigger string, force
 		state.TrimmedToolResults++
 	}
 	trimmedView := state.Context
-	trimmedView.Messages = append(cloneMessages(state.Context.Messages), a.runtimeMessage())
+	trimmedView.Messages = append(cloneMessages(state.Context.Messages), a.runtimeMessageFor(state.Context.Messages))
 	trimmedChars := requestChars(trimmedView)
 	// Automatic recovery verifies pruning by retrying the actual rejected request.
 	// Manual compaction treats a >=20% reduction as sufficient; explicit focus needs a summary.
@@ -266,7 +267,7 @@ func (a *Agent) compact(ctx context.Context, instructions, trigger string, force
 			}
 			for attempt := 0; attempt < 3; attempt++ {
 				candidate := state.Context
-				candidate.Messages = append(cloneMessages(state.Context.Messages), a.runtimeMessage())
+				candidate.Messages = append(cloneMessages(state.Context.Messages), a.runtimeMessageFor(state.Context.Messages))
 				current := estimateContextUsage(candidate, limit).Tokens
 				emitCompactionProgress(emit, turn, CompactionProgress{Stage: "budget", CurrentTokens: current, TargetTokens: state.TargetTokens})
 				if current <= state.TargetTokens {
@@ -300,7 +301,7 @@ func (a *Agent) compact(ctx context.Context, instructions, trigger string, force
 	}
 	state.AfterMessages = len(state.Context.Messages)
 	afterView := state.Context
-	afterView.Messages = append(cloneMessages(state.Context.Messages), a.runtimeMessage())
+	afterView.Messages = append(cloneMessages(state.Context.Messages), a.runtimeMessageFor(state.Context.Messages))
 	state.AfterChars = requestChars(afterView)
 	a.mu.Lock()
 	state.ContextLimitTokens = a.contextLimitTokens

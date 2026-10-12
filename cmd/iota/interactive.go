@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -87,6 +88,16 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 				continue
 			}
 			output := eventOutput{stdout: stdout, stderr: stderr, stdoutStyle: styleFor(stdout), stderrStyle: styleFor(stderr)}
+			if command, err := agent.HandleSkillCommand(context.Background(), line, session, output.emit); command.Handled {
+				if err != nil {
+					printLine(stderr, colorError, "iota: "+err.Error())
+				} else if command.Prompt != "" {
+					_ = execute(agent, command.Prompt, signals, stdout, stderr, false, session)
+				} else if command.Output != "" {
+					printLine(stderr, colorThinking, command.Output)
+				}
+				continue
+			}
 			if strings.Fields(line)[0] == "/compact" {
 				failedEvent := false
 				err := compactConversation(agent, session, strings.TrimSpace(strings.TrimPrefix(line, "/compact")), signals, func(event iota.Event) {

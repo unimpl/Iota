@@ -23,6 +23,10 @@ type Config struct {
 	Tools        []Tool
 	MaxTurns     int
 	Mode         Mode
+	// SkillsDir defaults to ~/.iota/skills. Skills are discovered at New and reload.
+	SkillsDir string
+	// DisableSkills avoids discovery, new skill activation, and installation.
+	DisableSkills bool
 	// PlansDir is supplied by the caller; the SDK does not choose a user directory.
 	PlansDir string
 	// PlanTemplatePath is an optional editable resource; empty uses the packaged default.
@@ -32,7 +36,7 @@ type Config struct {
 	// CompactionTargetRatio is the automatic post-compaction input target; zero uses the default.
 	CompactionTargetRatio float64
 	// SystemPromptLoader reloads authoritative instructions before every request.
-	// The CLI uses it for AGENTS.md; SDK callers can also inject skills here.
+	// The CLI uses it for AGENTS.md; skills use the SDK registry independently.
 	SystemPromptLoader func(context.Context) (string, error)
 	// UserInputHandler waits for interactive answers within the current Run.
 	// Without a handler, request_user_input is unavailable in every mode.
@@ -86,6 +90,22 @@ func New(config Config) (*Agent, error) {
 		}
 	}
 
+	registry := skillRegistry{byName: make(map[string]registeredSkill)}
+	if !config.DisableSkills {
+		if config.SkillsDir == "" {
+			var err error
+			config.SkillsDir, err = DefaultSkillsDir()
+			if err != nil {
+				return nil, fmt.Errorf("resolve skills directory: %w", err)
+			}
+		}
+		var err error
+		registry, err = loadSkillRegistry(context.Background(), config.SkillsDir)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	seen := make(map[string]struct{}, len(config.Tools))
 	compiled := make([]compiledTool, 0, len(config.Tools))
 	for _, tool := range config.Tools {
@@ -95,7 +115,7 @@ func New(config Config) (*Agent, error) {
 		if _, ok := seen[tool.Name]; ok {
 			return nil, fmt.Errorf("duplicate tool name %q", tool.Name)
 		}
-		if tool.Execute == nil && !tool.planTool && !tool.historyTool && !tool.userInputTool {
+		if tool.Execute == nil && !tool.planTool && !tool.historyTool && !tool.userInputTool && !tool.skillTool {
 			return nil, fmt.Errorf("tool %q has no execute function", tool.Name)
 		}
 		if tool.planTool && tool.Name == "save_plan" && config.PlansDir == "" {
@@ -137,5 +157,7 @@ func New(config Config) (*Agent, error) {
 		systemPromptLoader:    config.SystemPromptLoader,
 		userInputHandler:      config.UserInputHandler,
 		collaboration:         CollaborationState{Mode: config.Mode},
+		skills:                registry,
+		skillsDisabled:        config.DisableSkills,
 	}, nil
 }

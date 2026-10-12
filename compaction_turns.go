@@ -94,6 +94,11 @@ func (a *Agent) summarizeTurns(ctx context.Context, messages []Message, memory C
 			for j := range inputs[i].Messages {
 				inputs[i].Messages[j].Sources = nil
 				inputs[i].Messages[j].Checkpoint = nil
+				if skill := inputs[i].Messages[j].Skill; skill != nil {
+					// Instruction snapshots live outside the summary. Summarize use,
+					// task decisions and progress, never rewrite procedural guidance.
+					inputs[i].Messages[j].Content = fmt.Sprintf("Skill %s instructions activated (version %s); full instructions supplied independently by the SDK. Preserve relevant user selection and workflow progress, not a paraphrase of SKILL.md.", skill.Name, skill.Hash)
+				}
 			}
 		}
 		request, err := a.structuredSummaryRequest(inputs, memory, instructions)

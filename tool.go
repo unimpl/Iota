@@ -121,6 +121,9 @@ func (a *Agent) executeTool(ctx context.Context, call ToolCall, turn int, emit E
 	if selected.tool.userInputTool {
 		return a.executeUserInput(ctx, call, inputIndex, inputCount)
 	}
+	if selected.tool.skillTool {
+		return a.executeSkillTool(ctx, call, turn, emit, record)
+	}
 	if selected.tool.planTool {
 		text, err := a.executePlanTool(ctx, call, turn, emit, record)
 		if err != nil {

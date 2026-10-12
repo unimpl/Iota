@@ -15,15 +15,24 @@ For changes to existing work, revise the relevant checklist while preserving val
 // runtimeMessage is a transient suffix. Replacing it leaves the preceding history
 // unchanged, so the provider can reuse that long common prefix.
 func (a *Agent) runtimeMessage() Message {
+	return a.runtimeMessageFor(a.Messages())
+}
+
+func (a *Agent) runtimeMessageFor(messages []Message) Message {
 	state := a.Collaboration()
 	data, _ := json.Marshal(state)
 	text := "[Current runtime state; not a user request]\n<runtime-context>\n" + string(data) + "\n</runtime-context>"
 	a.mu.Lock()
 	turn := a.runTurn
+	install := a.runSkillInstall
 	a.mu.Unlock()
 	if turn == 1 && state.Mode == ModeDefault {
 		text += "\n\n" + runEntryPrompt
+		if install {
+			text += "\n\n" + skillInstallPrompt
+		}
 	}
+	text += a.skillRuntimeContext(messages)
 	return Message{Role: RoleUser, Content: text, RuntimeContext: true}
 }
 
