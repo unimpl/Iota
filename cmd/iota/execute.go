@@ -12,7 +12,7 @@ import (
 )
 
 // execute 运行一次提示并转发文本和工具事件；中断时等待 Agent 完成清理。
-func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout, stderr io.Writer, single bool, session *iota.Session) int {
+func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout, stderr io.Writer, single bool, session *iota.Session, thinkingLines int) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// outcome 把运行结果和错误一起从工作协程传回，避免阻塞信号处理。
@@ -22,7 +22,7 @@ func execute(agent *iota.Agent, prompt string, signals <-chan os.Signal, stdout,
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		output := eventOutput{stdout: stdout, stderr: stderr, stdoutStyle: styleFor(stdout), stderrStyle: styleFor(stderr)}
+		output := eventOutput{stdout: stdout, stderr: stderr, stdoutStyle: styleFor(stdout), stderrStyle: styleFor(stderr), thinking: thinkingOutput{lines: &thinkingLines}}
 		result, err := session.Run(ctx, agent, prompt, output.emit)
 		done <- outcome{result: result, err: err}
 	}()

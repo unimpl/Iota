@@ -147,7 +147,7 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	defer signal.Stop(signals)
 
 	if opts.prompt != "" {
-		return execute(agent, opts.prompt, signals, stdout, stderr, true, session)
+		return execute(agent, opts.prompt, signals, stdout, stderr, true, session, thinkingAll)
 	}
 	if !terminal {
 		data, err := io.ReadAll(stdin)
@@ -159,7 +159,7 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 			printLine(stderr, colorError, "iota: standard input is empty")
 			return 2
 		}
-		return execute(agent, string(data), signals, stdout, stderr, true, session)
+		return execute(agent, string(data), signals, stdout, stderr, true, session, thinkingAll)
 	}
 	return interactive(agent, signals, stdin, stdout, stderr, session, ui)
 }

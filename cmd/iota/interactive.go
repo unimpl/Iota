@@ -43,6 +43,7 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 		}
 	}
 	defer closeEditor()
+	thinkingLines := thinkingAll
 	for {
 		prompt := "[you] > "
 		if agent.Mode() == iota.ModePlan {
@@ -74,6 +75,12 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 				}
 			}
 			line := strings.TrimSpace(read.Line)
+			if handled, err := thinkingCommand(line, &thinkingLines, stderr); handled {
+				if err != nil {
+					printLine(stderr, colorError, "iota: "+err.Error())
+				}
+				continue
+			}
 			switch line {
 			case "":
 				continue
@@ -92,7 +99,7 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 				if err != nil {
 					printLine(stderr, colorError, "iota: "+err.Error())
 				} else if command.Prompt != "" {
-					_ = execute(agent, command.Prompt, signals, stdout, stderr, false, session)
+					_ = execute(agent, command.Prompt, signals, stdout, stderr, false, session, thinkingLines)
 				} else if command.Output != "" {
 					printLine(stderr, colorThinking, command.Output)
 				}
@@ -118,11 +125,11 @@ func interactive(agent *iota.Agent, signals <-chan os.Signal, stdin *os.File, st
 			}
 			if handled {
 				if nextPrompt != "" {
-					_ = execute(agent, nextPrompt, signals, stdout, stderr, false, session)
+					_ = execute(agent, nextPrompt, signals, stdout, stderr, false, session, thinkingLines)
 				}
 				continue
 			}
-			_ = execute(agent, line, signals, stdout, stderr, false, session)
+			_ = execute(agent, line, signals, stdout, stderr, false, session, thinkingLines)
 		}
 	}
 }

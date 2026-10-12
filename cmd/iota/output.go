@@ -60,12 +60,21 @@ type eventOutput struct {
 	reasoningOpen  bool
 	assistantOpen  bool
 	assistantEnded bool
+	thinking       thinkingOutput
+	terminalWidth  func() int
 }
 
 func (o *eventOutput) emit(event iota.Event) {
-	if o.reasoningOpen && (event.Type == iota.EventTextDelta || event.Type == iota.EventToolCallDelta || event.Type == iota.EventModelResponse || event.Type == iota.EventRunEnd || event.Type == iota.EventCompactionStart) {
-		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "\n[/thinking]"))
-		o.reasoningOpen = false
+	if o.reasoningOpen {
+		switch event.Type {
+		case iota.EventTextDelta, iota.EventToolCallDelta, iota.EventModelResponse, iota.EventModelError,
+			iota.EventToolStart, iota.EventToolEnd, iota.EventRunEnd,
+			iota.EventCompactionStart, iota.EventCompactionPrepared, iota.EventCompactionProgress, iota.EventCompactionEnd,
+			iota.EventModeChanged, iota.EventPlanSaved, iota.EventPlanApproved, iota.EventProgressUpdated,
+			iota.EventSkillInstalled, iota.EventSkillActivated:
+			o.thinking.finish(o.stderr, o.stderrStyle)
+			o.reasoningOpen = false
+		}
 	}
 	if o.assistantOpen && (event.Type == iota.EventReasoningDelta || event.Type == iota.EventToolCallDelta || event.Type == iota.EventToolStart || event.Type == iota.EventModelResponse || event.Type == iota.EventRunEnd || event.Type == iota.EventCompactionStart) {
 		if !o.assistantEnded {
@@ -161,11 +170,14 @@ func (o *eventOutput) emit(event iota.Event) {
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "["+step.Status+"] "+step.Step))
 		}
 	case iota.EventReasoningDelta:
+		if event.Reasoning == "" {
+			break
+		}
 		if !o.reasoningOpen {
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorThinking, "[thinking]"))
 			o.reasoningOpen = true
 		}
-		fmt.Fprint(o.stderr, o.stderrStyle.text(colorThinking, event.Reasoning))
+		o.thinking.append(o.stderr, o.stderrStyle, event.Reasoning)
 	case iota.EventTextDelta:
 		if o.stdoutStyle.terminal {
 			if !o.assistantOpen {
@@ -181,16 +193,7 @@ func (o *eventOutput) emit(event iota.Event) {
 		if event.ToolCall.Name == "request_user_input" {
 			break
 		}
-		arguments := string(event.ToolCall.Arguments)
-		if event.ToolCall.Name == "bash" {
-			var args struct {
-				Command string `json:"command"`
-			}
-			if err := json.Unmarshal(event.ToolCall.Arguments, &args); err == nil && args.Command != "" {
-				arguments = args.Command
-			}
-		}
-		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorTool, fmt.Sprintf("[%s] %s", event.ToolCall.Name, arguments)))
+		fmt.Fprintln(o.stderr, o.stderrStyle.text(colorTool, o.toolCallLine(*event.ToolCall)))
 	case iota.EventToolEnd:
 		if event.IsError {
 			fmt.Fprintln(o.stderr, o.stderrStyle.text(colorError, fmt.Sprintf("[%s error] %s", event.ToolCall.Name, event.ToolResult)))

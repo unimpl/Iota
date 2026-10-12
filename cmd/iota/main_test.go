@@ -377,7 +377,7 @@ func TestExecuteReasoning(t *testing.T) {
 				t.Fatal(err)
 			}
 			var stdout, stderr bytes.Buffer
-			code := execute(agent, "question", make(chan os.Signal), &stdout, &stderr, false, nil)
+			code := execute(agent, "question", make(chan os.Signal), &stdout, &stderr, false, nil, thinkingAll)
 			wantCode, wantOutput := 0, "回答\n"
 			wantReasoning := "[thinking]\n先思考\n[/thinking]\n"
 			if failed {
