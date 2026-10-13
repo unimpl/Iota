@@ -424,10 +424,42 @@ func (a *Agent) checkPlanPath(plan SavedPlan) error {
 
 // ApprovePlan reads the editable file and switches to default; it does not start a run.
 func (a *Agent) ApprovePlan(emit EmitFunc) (SavedPlan, error) {
-	return a.approvePlan(emit, nil)
+	return a.approvePlan("", emit, nil)
 }
 
-func (a *Agent) approvePlan(emit EmitFunc, record func(Event) error) (SavedPlan, error) {
+// ErrPlanChanged prevents a UI from approving different content than it displayed.
+var ErrPlanChanged = errors.New("plan changed since it was reviewed; reload the plan before approval")
+
+// PlanPreview reads the current editable file without changing collaboration state.
+func (a *Agent) PlanPreview() (SavedPlan, error) {
+	state := a.Collaboration()
+	if state.Plan == nil {
+		return SavedPlan{}, errors.New("no saved plan")
+	}
+	if err := a.checkPlanPath(*state.Plan); err != nil {
+		return SavedPlan{}, err
+	}
+	data, err := os.ReadFile(state.Plan.Path)
+	if err != nil {
+		return SavedPlan{}, err
+	}
+	if err := validatePlanContent(string(data)); err != nil {
+		return SavedPlan{}, err
+	}
+	plan := *state.Plan
+	plan.Content = string(data)
+	return plan, nil
+}
+
+// ApprovePlanVersion binds approval to the SHA-256 of a previously displayed preview.
+func (a *Agent) ApprovePlanVersion(contentHash string, emit EmitFunc) (SavedPlan, error) {
+	if contentHash == "" {
+		return SavedPlan{}, errors.New("reviewed plan hash is required")
+	}
+	return a.approvePlan(contentHash, emit, nil)
+}
+
+func (a *Agent) approvePlan(contentHash string, emit EmitFunc, record func(Event) error) (SavedPlan, error) {
 	a.mu.Lock()
 	if a.running {
 		a.mu.Unlock()
@@ -456,6 +488,9 @@ func (a *Agent) approvePlan(emit EmitFunc, record func(Event) error) (SavedPlan,
 	}
 	if err := validatePlanContent(string(data)); err != nil {
 		return SavedPlan{}, err
+	}
+	if contentHash != "" && contentHash != planContentHash(string(data)) {
+		return SavedPlan{}, ErrPlanChanged
 	}
 	if state.Plan.Content != string(data) {
 		state.Progress = nil

@@ -1,6 +1,6 @@
 # iota
 
-iota 是一个精简的 Go Agent SDK，以及使用该 SDK 构建的普通命令行编程助手。它保留 Agent 的必要闭环：请求模型、校验并执行工具、把工具结果交回模型，再得到最终回答。
+iota 是一个精简的 Go Agent SDK，以及使用该 SDK 构建的命令行和 React Web 编程助手。它保留 Agent 的必要闭环：请求模型、校验并执行工具、把工具结果交回模型，再得到最终回答。CLI 独立运行；Web 通过 HTTP Server 调用同一个 SDK。
 
 项目只支持 OpenAI 兼容 Chat Completions 协议。SDK 默认在内存中保存对话，也提供可选的 JSONL 会话保存和恢复。CLI 使用同一套会话能力，记录可供查看器观察。支持手动上下文压缩和上下文超限后的自动恢复；不包含 TUI、插件、MCP 或多 Agent。
 
@@ -207,6 +207,28 @@ go run ./cmd/iota-view --folder /path/to/sessions
 
 CLI 默认配置文件工具、`save_plan`、`update_progress`、两个历史工具、`request_user_input` 和三个技能工具；实际开放的工具由当前模式、Session、已安装技能及交互能力决定。工具使用当前进程权限；规划模式的工具检查不是操作系统沙箱。
 
+## HTTP Server 与 Web
+
+```sh
+go run ./cmd/iota-server
+```
+
+默认监听 `http://127.0.0.1:9281`，React 客户端随 Go 程序嵌入，无需单独启动 Node 服务。Server 与 CLI 共用配置加载、系统提示、工具初始化和 `~/.iota` 下的 sessions、skills、plans；Web 使用 ChatGPT 风格的聊天布局，支持流式回复、工具与思考详情、规划与批准执行、进度、压缩、重置、skills 和用户提问。
+
+![Iota Web 客户端：会话列表、工具执行状态和流式对话](docs/images/iota-web.png)
+
+上图使用本地假 Provider 验证界面，展示会话列表、工具执行状态、回复和消息输入。
+
+查看历史不占用会话；点击“打开会话”后持有独占锁，另一端打开同一 session 会返回占用错误。空闲时切换会话会释放旧会话；运行中切换只改变展示，后台任务继续。刷新、断线和关闭浏览器不会取消任务或释放会话。使用“停止任务”取消，再通过会话操作中的“释放会话”交给 CLI。打开已有会话时，Server 使用日志记录的原工作目录；CLI 恢复仍遵守现有 `--cwd` 行为。
+
+Server 只提供 HTTP。通过网关使用 HTTPS 时，设置公开 Origin，并关闭网关的 SSE 缓冲：
+
+```sh
+go run ./cmd/iota-server --listen 127.0.0.1:9281 --origin https://iota.example.com
+```
+
+Server 必须与 CLI 使用同一用户和文件系统才能共享会话。模型凭据与配置引用的环境变量只在服务端读取。Web 需要会话持久化；配置为 `save_session=false` 时，Server 明确报错。详细接口、生命周期和开发方式见 [Server 架构与协议](docs/server.md)。
+
 ## SDK
 
 ```go
@@ -240,7 +262,7 @@ result, err := agent.Run(context.Background(), "解释 README", func(event iota.
 
 `openaicompat.Config.Timeout` 的零值使用默认 2 分钟，正值设置响应等待与读取空闲超时；负值报错。Provider 不设置模型流的总时长上限。调用方传入的 context 截止时间及自定义 `HTTPClient.Timeout` 仍然有效，若设置了总时长上限，持续输出也可能到期停止。空闲监测通过请求自己的取消 context 实现，不修改共享 HTTP client 或连接的截止时间。
 
-SDK 不读取 CLI 配置文件、配置环境变量、`AGENTS.md` 或终端。只有 `cmd/iota` 处理 CLI 配置；SDK 调用者显式注入 Provider、模型、系统提示和工具。SDK 默认不注册工具。
+SDK 不读取 CLI 配置文件、配置环境变量、`AGENTS.md` 或终端。`cmd/iota` 和 `cmd/iota-server` 通过 `internal/app` 共用配置与初始化；其他 SDK 调用者显式注入 Provider、模型、系统提示和工具。SDK 默认不注册工具。
 
 技能发现默认使用当前用户的 `~/.iota/skills`；`Config.SkillsDir` 可以指定其他目录，`Config.DisableSkills` 禁用发现、新激活和安装。SDK 调用方在 `Config.Tools` 注册 `iota.NewReadSkillTool()`、`iota.NewReadSkillResourceTool()`，才开放模型的隐式使用和资源读取；注册 `iota.NewInstallSkillTool()` 开放模型安装。显式 `$skill:name` 由 `Run` 处理。`agent.Skills()` 返回可用技能与诊断的独立副本，`agent.ActiveSkills()` 返回已激活的原文快照。
 
@@ -292,7 +314,9 @@ if err := session.Restore(agent); err != nil {
 result, err := session.Run(ctx, agent, "继续之前的任务", nil)
 ```
 
-保存期间使用 `session.Reset(agent)` 清空历史并保存重置事件。保存失败会作为运行错误返回，并取消本次运行。同一会话不支持同时运行、恢复、重置或关闭，也不支持多个进程同时写入同一文件。恢复不会自动还原工具函数、凭据或工作目录，这些由创建 Agent 的程序决定。
+保存期间使用 `session.Reset(agent)` 清空历史并保存重置事件。保存失败会作为运行错误返回，并取消本次运行。同一会话不支持同时运行、恢复、重置或关闭。`NewSession` 和 `OpenSession` 持有跨进程独占锁，直到 `Close` 或进程退出；另一 Agent 打开时返回 `ErrSessionOccupied`。只读查看日志不获取 Agent 所有权，`DeleteSession` 拒绝删除已打开的会话。恢复不会自动还原工具函数、凭据或工作目录，这些由创建 Agent 的程序决定；`session.Info()` 提供原模型与工作目录信息。
+
+需要通过 UI 批准计划时，先用 `agent.PlanPreview()` 读取当前文件，展示正文，再把它的 SHA-256 交给 `session.ApprovePlanVersion(agent, hash, emit)`。文件变化时返回 `ErrPlanChanged`，不改变模式或批准状态。现有 `ApprovePlan` 继续读取实际文件并批准，供 CLI 的显式 `/execute` 使用。
 
 参见 [`examples/basic`](examples/basic)、[`examples/custom-tool`](examples/custom-tool) 和 [`examples/session`](examples/session)。Session 示例完整演示保存、关闭会话，再用新 Agent 恢复历史并继续对话：
 
@@ -337,6 +361,10 @@ flowchart LR
 | `plan_template.go`、`iota/plans/template.md` | 默认规划流程、选项与自定义回答指引、模板读取与初始化 |
 | `session.go` | 可选会话保存、运行、重置和关闭 |
 | `session_restore.go` | 读取会话、校验消息、处理中断后的工具结果缺失 |
+| `session_lock.go` | 跨进程会话所有权、占用检查与删除保护 |
+| `internal/app` | CLI 与 Server 共用的配置、工具、提示和规划命令 |
+| `internal/server`、`cmd/iota-server` | HTTP 接口、会话生命周期、后台执行和 SSE |
+| `web/src`、`web/dist` | React 聊天界面与嵌入程序的生成资产 |
 
 ## 开发
 
@@ -345,6 +373,11 @@ go test ./...
 go test -race ./...
 go vet ./...
 node --test cmd/iota-view/*.test.mjs
+cd web
+npm ci --ignore-scripts
+npm run check
+node --disable-warning=ExperimentalWarning --experimental-strip-types --test model.test.mjs
+node build.mjs
 ```
 
 测试只使用假 Provider 和本地 HTTP 服务，不请求真实模型。

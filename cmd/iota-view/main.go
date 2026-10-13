@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+
+	iota "github.com/unimpl/Iota"
 )
 
 // webFiles 将静态页面嵌入可执行文件，查看器启动时不依赖外部资源目录。
@@ -119,7 +121,11 @@ func newHandler(folder string) http.Handler {
 			http.Error(w, "session is not a regular file", http.StatusBadRequest)
 			return
 		}
-		if err := os.Remove(path); err != nil {
+		if err := iota.DeleteSession(path); err != nil {
+			if errors.Is(err, iota.ErrSessionOccupied) {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
 			if errors.Is(err, os.ErrNotExist) {
 				http.Error(w, "session not found", http.StatusNotFound)
 			} else {

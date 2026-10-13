@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -11,7 +10,7 @@ import (
 	"syscall"
 
 	iota "github.com/unimpl/Iota"
-	"github.com/unimpl/Iota/provider/openaicompat"
+	"github.com/unimpl/Iota/internal/app"
 )
 
 // main 把 CLI 退出码交给操作系统；可测试的控制流程保留在 run 中。
@@ -41,57 +40,21 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		printLine(stderr, colorError, fmt.Sprintf("iota: invalid working directory %q", absCWD))
 		return 2
 	}
-	systemPrompt, err := loadSystemPrompt(absCWD, opts.system)
-	if err != nil {
-		printLine(stderr, colorError, "iota: "+err.Error())
-		return 2
-	}
-	selectedTools, err := createTools(absCWD, opts.tools, opts.timeout, func(message string) {
-		printLine(stderr, colorThinking, message)
-	})
-	if err != nil {
-		printLine(stderr, colorError, "iota: "+err.Error())
-		return 2
-	}
-	provider, err := openaicompat.New(openaicompat.Config{
-		BaseURL: opts.baseURL,
-		APIKey:  opts.apiKey,
-		Timeout: opts.timeout,
-	})
-	if err != nil {
-		printLine(stderr, colorError, "iota: "+err.Error())
-		return 2
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		printLine(stderr, colorError, "iota: get user directory: "+err.Error())
 		return 2
 	}
-	plansDir := filepath.Join(home, ".iota", "plans")
 	terminal := isTerminal(stdin)
 	var inputHandler iota.UserInputHandler
 	ui := &userInputUI{}
 	if terminal && opts.prompt == "" {
 		inputHandler = ui.handle
 	}
-	agent, err := iota.New(iota.Config{
-		Provider:              provider,
-		Model:                 opts.model,
-		SystemPrompt:          systemPrompt,
-		Tools:                 selectedTools,
-		MaxTurns:              opts.maxTurns,
-		Mode:                  iota.Mode(opts.mode),
-		PlansDir:              plansDir,
-		PlanTemplatePath:      filepath.Join(plansDir, "template.md"),
-		KeepRecentTokens:      opts.keepRecentTokens,
-		CompactionTargetRatio: opts.compactionTargetRatio,
-		UserInputHandler:      inputHandler,
-		SystemPromptLoader: func(ctx context.Context) (string, error) {
-			if err := ctx.Err(); err != nil {
-				return "", err
-			}
-			return loadSystemPrompt(absCWD, opts.system)
-		},
+	settings := sharedSettings(opts)
+	settings.CWD = absCWD
+	agent, err := app.NewAgent(settings, home, inputHandler, func(message string) {
+		printLine(stderr, colorThinking, message)
 	})
 	if err != nil {
 		printLine(stderr, colorError, "iota: "+err.Error())

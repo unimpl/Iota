@@ -12,11 +12,21 @@ import (
 // OpenSession 读取已有会话并准备追加；损坏文件会报错，不覆盖原文件。
 // 只恢复完整消息。中断后未完成的工具调用补为错误结果，不重新执行工具。
 func OpenSession(path string) (*Session, error) {
+	lock, err := lockSession(path)
+	if err != nil {
+		return nil, err
+	}
+	success := false
+	defer func() {
+		if !success {
+			lock.Close()
+		}
+	}()
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{file: file, path: path, collaboration: CollaborationState{Mode: ModeDefault}}
+	s := &Session{file: file, lock: lock, path: path, collaboration: CollaborationState{Mode: ModeDefault}}
 	if err := s.read(); err != nil {
 		file.Close()
 		return nil, fmt.Errorf("load session: %w", err)
@@ -38,6 +48,7 @@ func OpenSession(path string) (*Session, error) {
 			return nil, err
 		}
 	}
+	success = true
 	return s, nil
 }
 
@@ -63,6 +74,11 @@ func (s *Session) read() error {
 				return errors.New("first record must be session_start")
 			}
 			s.id = record.SessionID
+			if len(record.Payload) > 0 {
+				if err := json.Unmarshal(record.Payload, &s.info); err != nil {
+					return fmt.Errorf("invalid session info: %w", err)
+				}
+			}
 		} else if record.SessionID != s.id {
 			return errors.New("session ID changed inside file")
 		}

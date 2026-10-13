@@ -27,6 +27,8 @@ type Session struct {
 	operation          sync.Mutex
 	mu                 sync.Mutex
 	file               *os.File
+	lock               *os.File
+	info               SessionInfo
 	id                 string
 	path               string
 	seq                uint64
@@ -63,13 +65,19 @@ func NewSession(dir string, info SessionInfo) (*Session, error) {
 		return nil, err
 	}
 	path := filepath.Join(dir, time.Now().Format("2006-01-02")+"-"+id+".jsonl")
+	lock, err := lockSession(path)
+	if err != nil {
+		return nil, err
+	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
+		lock.Close()
 		return nil, fmt.Errorf("create session file: %w", err)
 	}
-	s := &Session{file: file, id: id, path: path, collaboration: CollaborationState{Mode: ModeDefault}}
+	s := &Session{file: file, lock: lock, info: info, id: id, path: path, collaboration: CollaborationState{Mode: ModeDefault}}
 	if err := s.write("", "session_start", info); err != nil {
 		file.Close()
+		lock.Close()
 		return nil, err
 	}
 	return s, nil
@@ -77,6 +85,31 @@ func NewSession(dir string, info SessionInfo) (*Session, error) {
 
 // Path 返回会话文件路径，不替调用方选择用户目录。
 func (s *Session) Path() string { return s.path }
+
+// Info returns immutable source information, including the original tool directory.
+func (s *Session) Info() SessionInfo { return s.info }
+
+// AppendMetadata records application-owned request state alongside SDK events.
+// Metadata does not become a model message; writes are allowed only while idle.
+func (s *Session) AppendMetadata(kind string, payload json.RawMessage) error {
+	if kind != "client_request" && kind != "client_result" {
+		return errors.New("invalid client metadata kind")
+	}
+	if !json.Valid(payload) {
+		return errors.New("invalid client metadata JSON")
+	}
+	if !s.operation.TryLock() {
+		return ErrBusy
+	}
+	defer s.operation.Unlock()
+	if err := s.write("", kind, payload); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = s.file.Sync()
+	return s.err
+}
 
 // SetSummaryDir selects the directory for derived Markdown snapshots.
 // By default the SDK uses the session directory; the CLI supplies ~/.iota/sessions.
@@ -246,7 +279,7 @@ func (s *Session) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
-	return errors.Join(writeErr, s.file.Sync(), s.file.Close())
+	return errors.Join(writeErr, s.file.Sync(), s.file.Close(), s.lock.Close())
 }
 
 // checkOpen 由持锁的调用方检查文件状态，保存失败后禁止继续追加。
@@ -450,8 +483,20 @@ func (s *Session) SetMode(agent *Agent, mode Mode, emit EmitFunc) error {
 
 // ApprovePlan records the exact file content the user approved and leaves plan mode.
 func (s *Session) ApprovePlan(agent *Agent, emit EmitFunc) (SavedPlan, error) {
+	return s.approvePlan(agent, "", emit)
+}
+
+// ApprovePlanVersion persists approval only when the file still matches its preview.
+func (s *Session) ApprovePlanVersion(agent *Agent, contentHash string, emit EmitFunc) (SavedPlan, error) {
+	if contentHash == "" {
+		return SavedPlan{}, errors.New("reviewed plan hash is required")
+	}
+	return s.approvePlan(agent, contentHash, emit)
+}
+
+func (s *Session) approvePlan(agent *Agent, contentHash string, emit EmitFunc) (SavedPlan, error) {
 	if s == nil {
-		return agent.ApprovePlan(emit)
+		return agent.approvePlan(contentHash, emit, nil)
 	}
 	if !s.operation.TryLock() {
 		return SavedPlan{}, ErrBusy
@@ -463,7 +508,7 @@ func (s *Session) ApprovePlan(agent *Agent, emit EmitFunc) (SavedPlan, error) {
 	if err != nil {
 		return SavedPlan{}, err
 	}
-	return agent.approvePlan(emit, func(event Event) error { return s.recordState("", event) })
+	return agent.approvePlan(contentHash, emit, func(event Event) error { return s.recordState("", event) })
 }
 
 // newUUID 为会话与每次运行生成随机 v4 UUID。

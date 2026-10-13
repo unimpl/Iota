@@ -10,6 +10,7 @@ import (
 	"time"
 
 	iota "github.com/unimpl/Iota"
+	"github.com/unimpl/Iota/internal/app"
 )
 
 // options 是合并文件、环境变量和命令行参数后的运行配置。
@@ -34,7 +35,7 @@ type options struct {
 
 // parseOptions 加载本地配置，再交给可注入依赖的解析函数处理覆盖关系。
 func parseOptions(args []string, stderr io.Writer) (options, error) {
-	config, err := loadConfig()
+	config, err := app.LoadConfig()
 	if err != nil {
 		return options{}, err
 	}
