@@ -11,10 +11,16 @@ import (
 
 // createTools 按配置顺序选择内置工具，并去掉重复名称。
 // 空列表或 none 明确禁用工具，未知名称会报错。
-func createTools(cwd, list string, timeout time.Duration) ([]iota.Tool, error) {
+func createTools(cwd, list string, timeout time.Duration, onStatus ...func(string)) ([]iota.Tool, error) {
+	rg := builtins.RipgrepConfig{}
+	if len(onStatus) > 0 {
+		rg.OnStatus = onStatus[0]
+	}
 	available := map[string]iota.Tool{
 		"read":                builtins.NewRead(cwd),
 		"list":                builtins.NewList(cwd),
+		"search":              builtins.NewSearch(cwd, rg),
+		"find_files":          builtins.NewFindFiles(cwd, rg),
 		"write":               builtins.NewWrite(cwd),
 		"edit":                builtins.NewEdit(cwd),
 		"bash":                builtins.NewBash(cwd, timeout),

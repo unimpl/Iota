@@ -46,7 +46,9 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		printLine(stderr, colorError, "iota: "+err.Error())
 		return 2
 	}
-	selectedTools, err := createTools(absCWD, opts.tools, opts.timeout)
+	selectedTools, err := createTools(absCWD, opts.tools, opts.timeout, func(message string) {
+		printLine(stderr, colorThinking, message)
+	})
 	if err != nil {
 		printLine(stderr, colorError, "iota: "+err.Error())
 		return 2

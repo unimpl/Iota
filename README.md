@@ -29,7 +29,7 @@ base_url = "https://api.openai.com/v1"
 api_key = "$API_KEY" # 运行时读取该环境变量，不把凭据写入文件
 cwd = "."
 system = "回答前先读取相关文件。"
-tools = ["read", "list", "write", "edit", "bash", "save_plan", "update_progress", "search_history", "read_history", "request_user_input", "read_skill", "read_skill_resource", "install_skill"]
+tools = ["read", "list", "search", "find_files", "write", "edit", "bash", "save_plan", "update_progress", "search_history", "read_history", "request_user_input", "read_skill", "read_skill_resource", "install_skill"]
 mode = "default" # plan 表示先探索和编写计划
 max_turns = 100
 timeout = "2m" # 模型响应等待/空闲超时；bash 命令总时长上限
@@ -45,6 +45,23 @@ CLI 支持 `~/.iota/SYSTEM.md` 和工作目录中的 `.iota/SYSTEM.md`：找到�
 `timeout`、`IOTA_TIMEOUT` 和 `--timeout` 对模型请求限制的是等待响应及连续没有收到响应数据的时间，默认 2 分钟。收到响应头后重新计时，随后每次读到响应字节都会重置计时，包括正文、推理、SSE 心跳和尚未收完整的事件。持续输出可以超过 2 分钟；无数据时取消该请求，错误明确标注 `response idle timeout`，不接受不完整的回复或执行其中的工具调用。同一设置对 bash 仍表示命令的总时长上限。
 
 交互模式逐行接收任务，支持 `/reset`、`/compact [摘要重点]`、`/skill [list|reload|install <提示词>]`、`/thinking line <行数|all>`、`/exit` 和下述规划命令。模型文本写入 stdout，推理、提示符、工具状态和错误写入 stderr。
+
+### 代码搜索与文件查找
+
+CLI 默认提供两个只读工具，Plan 和 Default 模式均可使用：
+
+- `search` 搜索内容，返回 JSON 中的路径、行号和匹配行。`pattern` 默认按字面量匹配，`regex = true` 启用正则，`ignore_case = true` 忽略大小写，`glob` 限定文件路径。
+- `find_files` 按 `pattern` 中的 glob 查找路径，例如 `*.go` 或 `**/config*.go`，返回 JSON 文件列表。
+
+`path` 默认是工作目录。工具遵守 `.gitignore`、`.ignore` 和 `.rgignore`，默认跳过隐藏文件，`hidden = true` 可包含隐藏文件，但仍排除 `.git`；不跟随符号链接。结果按文件路径排序，`offset` 是从 1 开始的结果位置，`limit` 默认 100、最多 2000；输出还有 50 KiB 上限。`truncated = true` 时，用相同条件和 `next_offset` 继续读取；文件变化可能改变分页结果。匹配行最多保留 4096 字节，`text_truncated` 表示需用 `read` 读取全文；单条原始记录超过 1 MiB 明确报错。搜索最多运行一分钟，无匹配是正常结果，非法正则、路径错误和进程失败是工具错误。
+
+工具直接运行 ripgrep，不通过 shell。优先使用 PATH 中的 `rg`，其次使用 `~/.iota/bin/rg`；均不存在时，首次调用自动下载固定的 ripgrep 14.1.1，校验内置 SHA-256，再原子发布可执行文件。CLI 在 stderr 显示下载开始和安装完成，普通启动与禁用工具时不下载。下载最多两分钟，失败明确报告依赖不可用，无需管理员权限或修改 PATH。自动下载支持 macOS amd64/arm64、Linux amd64/arm64（arm64 包需要 glibc）和 Windows amd64；其他平台可以自行安装 rg。依赖下载支持不代表整个 CLI 已支持这些平台。
+
+下载失败立即结束该工具调用，提示官方发布页和实际安装路径。用户可手动解压 `rg` 到 `~/.iota/bin/rg`（Windows 为 `rg.exe`），Unix 上赋予执行权限，或把 rg 安装到 PATH。工具不提供自行实现的内容搜索兜底。
+
+文件模式支持 `*`、`?`、字符组和作为完整路径段的 `**`。不含 `/` 的模式匹配文件名，含 `/` 的模式匹配返回路径；`**` 匹配零个或多个目录段。路径过滤在 rg 的发现结果上执行，不覆盖忽略规则。
+
+SDK 用 `tools.NewSearch(cwd, tools.RipgrepConfig{})` 和 `tools.NewFindFiles(cwd, tools.RipgrepConfig{})` 注册工具。配置中的 `Path` 可指定已有可执行文件并禁用自动下载，`BinDir` 覆盖缓存目录，`OnStatus` 接收下载状态；SDK 不自动打印。
 
 ### Skills
 
@@ -182,7 +199,7 @@ go run ./cmd/iota-view --folder /path/to/sessions
 --system      附加系统提示
 --max-turns   每次运行最多模型轮数，默认 100
 --timeout     模型响应等待/空闲超时；bash 命令总时长上限，默认 2m
---tools       read,list,write,edit,bash,save_plan,update_progress,search_history,read_history,request_user_input,read_skill,read_skill_resource,install_skill 的逗号列表；none 表示禁用
+--tools       read,list,search,find_files,write,edit,bash,save_plan,update_progress,search_history,read_history,request_user_input,read_skill,read_skill_resource,install_skill 的逗号列表；none 表示禁用
 --mode        default 或 plan
 --no-session  关闭会话保存
 --resume      按路径或 UUID 恢复会话；传空字符串时恢复最近修改的会话

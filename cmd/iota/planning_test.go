@@ -56,7 +56,7 @@ func TestInteractivePlanningAndExecution(t *testing.T) {
 			names = append(names, tool.Function.Name)
 		}
 		if requests <= 2 {
-			if !strings.Contains(body.Messages[0].Content, "Collaboration mode: plan") || strings.Join(names, ",") != "read,list,save_plan,search_history,read_history" {
+			if !strings.Contains(body.Messages[0].Content, "Collaboration mode: plan") || strings.Join(names, ",") != "read,list,search,find_files,save_plan,search_history,read_history" {
 				t.Errorf("plan tools=%v messages=%+v", names, body.Messages)
 			}
 		} else if !strings.Contains(body.Messages[0].Content, "Collaboration mode: default") || strings.Contains(strings.Join(names, ","), "save_plan") {
