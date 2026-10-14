@@ -1,0 +1,30 @@
+{
+  "records": [
+    {"seq":1,"run_id":"run","type":"run_start"},
+    {"seq":2,"run_id":"run","type":"turn_start","payload":{"turn":1}},
+    {"seq":3,"run_id":"run","type":"reasoning_delta","payload":{"turn":1,"reasoning":"think","raw_chunk":"raw-provider"}},
+    {"seq":4,"run_id":"run","type":"text_delta","payload":{"turn":1,"text":"hello"}},
+    {"seq":5,"run_id":"run","type":"reasoning_delta","payload":{"turn":1,"reasoning":"ing"}},
+    {"seq":6,"run_id":"run","type":"model_stream_other","payload":{"raw_chunk":"raw-provider"}},
+    {"seq":7,"run_id":"run","type":"text_delta","payload":{"turn":1,"text":" world"}},
+    {"seq":8,"run_id":"run","type":"model_stream_finish"},
+    {"seq":9,"run_id":"run","type":"message_added","payload":{"type":"message_added","turn":1,"message":{"role":"assistant","content":"hello world"}}},
+    {"seq":10,"run_id":"run","type":"tool_start","payload":{"turn":1,"tool_call":{"id":"read","name":"read","arguments":{}}}},
+    {"seq":11,"run_id":"run","type":"tool_end","payload":{"turn":1,"tool_call":{"id":"read","name":"read","arguments":{}},"tool_result":"result"}},
+    {"seq":12,"run_id":"run","type":"run_end","payload":{"reason":"completed"}},
+    {"seq":13,"type":"session_reset"}
+  ],
+  "batches": [
+    {"cursor":1,"records":[{"seq":1,"run_id":"run","type":"run_start"}]},
+    {"cursor":2,"records":[{"seq":2,"run_id":"run","type":"turn_start","payload":{"turn":1}}]},
+    {"cursor":9,"records":[
+      {"seq":5,"run_id":"run","type":"reasoning_delta","payload":{"turn":1,"reasoning":"thinking"}},
+      {"seq":7,"run_id":"run","type":"text_delta","payload":{"turn":1,"text":"hello world"}},
+      {"seq":9,"run_id":"run","type":"message_added","payload":{"type":"message_added","turn":1,"message":{"role":"assistant","content":"hello world"}}}
+    ]},
+    {"cursor":10,"records":[{"seq":10,"run_id":"run","type":"tool_start","payload":{"turn":1,"tool_call":{"id":"read","name":"read","arguments":{}}}}]},
+    {"cursor":11,"records":[{"seq":11,"run_id":"run","type":"tool_end","payload":{"turn":1,"tool_call":{"id":"read","name":"read","arguments":{}},"tool_result":"result"}}]},
+    {"cursor":12,"records":[{"seq":12,"run_id":"run","type":"run_end","payload":{"reason":"completed"}}]},
+    {"cursor":13,"records":[{"seq":13,"type":"session_reset"}]}
+  ]
+}

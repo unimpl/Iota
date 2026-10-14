@@ -16,6 +16,34 @@ import (
 	iota "github.com/unimpl/Iota"
 )
 
+type streamFrame struct {
+	ID    string
+	Event string
+	Data  json.RawMessage
+}
+
+func readStreamFrame(t *testing.T, reader *bufio.Reader) streamFrame {
+	t.Helper()
+	var frame streamFrame
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		line = strings.TrimSuffix(line, "\n")
+		switch {
+		case strings.HasPrefix(line, "id: "):
+			frame.ID = strings.TrimPrefix(line, "id: ")
+		case strings.HasPrefix(line, "event: "):
+			frame.Event = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			frame.Data = json.RawMessage(strings.TrimPrefix(line, "data: "))
+		case line == "" && len(frame.Data) > 0:
+			return frame
+		}
+	}
+}
+
 func TestEventStreamResumesAtNextSequence(t *testing.T) {
 	provider := testProvider{stream: func(ctx context.Context, request iota.Request, emit func(iota.Delta)) (iota.Response, error) {
 		emit(iota.Delta{Text: "answer"})
@@ -48,25 +76,22 @@ func TestEventStreamResumesAtNextSequence(t *testing.T) {
 		}
 		reader := bufio.NewReader(response.Body)
 		for {
-			line, err := reader.ReadString('\n')
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.HasPrefix(line, "data: ") {
+			frame := readStreamFrame(t, reader)
+			if frame.Event != "records" {
 				continue
 			}
-			var record Record
-			if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &record) != nil || record.Sequence == 0 {
-				continue
+			var batch eventBatch
+			if err := json.Unmarshal(frame.Data, &batch); err != nil || len(batch.Records) == 0 {
+				t.Fatalf("batch=%s err=%v", frame.Data, err)
 			}
 			want := uint64(2)
 			if after == "" {
 				want = cursor + 1
 			}
-			if record.Sequence != want {
-				t.Fatalf("sequence=%d want=%d", record.Sequence, want)
+			if batch.Records[0].Sequence != want || frame.ID != fmt.Sprint(batch.Cursor) {
+				t.Fatalf("batch=%s want first sequence=%d", frame.Data, want)
 			}
-			cursor = record.Sequence
+			cursor = batch.Cursor
 			break
 		}
 		response.Body.Close()

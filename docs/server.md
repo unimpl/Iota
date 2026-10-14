@@ -46,8 +46,8 @@ node build.mjs
 | `POST /sessions/{name}/close` | 关闭空闲会话并释放锁 |
 | `DELETE /sessions/{name}` | 删除未被占用的会话日志 |
 | `GET /sessions/{name}/state` | 运行状态、协作状态、技能、待回答问题和当前计划预览 |
-| `GET /sessions/{name}/history?after=N` | 每页最多 200 个聊天事件，返回 `records`、`cursor`、`more` |
-| `GET /sessions/{name}/events?after=N` | SSE 事件与当前状态，重连优先使用 `Last-Event-ID` |
+| `GET /sessions/{name}/history` | 最近 3 次 run 的消息、全部 run 的轻量索引与实时游标；`?before=runID` 加载之前 3 次，`?run=runID` 加载指定 run |
+| `GET /sessions/{name}/events?after=N&interval_ms=1000` | 合并的 SSE 事件与当前状态，重连优先使用 `Last-Event-ID` |
 | `POST /sessions/{name}/commands` | 接受操作并在后台执行 |
 | `POST /sessions/{name}/stop` | 请求取消当前操作 |
 | `POST /sessions/{name}/answers` | 回答当前等待的问题，在原 Run 中继续 |
@@ -78,11 +78,19 @@ node build.mjs
 
 ### SSE 与历史
 
-`record` 事件使用 JSONL 的 `seq` 作为 ID；`state` 事件提供当前运行状态，状态变化时发送。客户端先分页读取历史，再从返回游标订阅事件，按序号忽略重复记录。
+历史接口先扫描日志建立轻量索引，再只投影所选 run 的完整回复、思考与工具调用/结果。默认返回最近 3 次 run 的 `items`；`before` 为排他的 run ID，返回之前最多 3 次 run；`run` 返回单个指定 run，两者不可同时使用。未知 run 或查询参数返回 400。`loaded_runs` 标识本页加载的 run。全部 run 按时间正序放在 `runs` 中，每项包含 `id`、`start_seq`、`end_seq`、`started_at`、`title`（最多 80 字符）、`preview`（最终文字回复摘要，最多 160 字符）和 `status`。较旧 run 的思考与工具正文不会进入默认响应。
+
+正在生成的回复保留已保存的部分内容和工具状态。首次扫描限定在请求开始时的文件大小，消息投影不超过首次扫描的 `cursor`；未完成的最后一行不计入游标。所有历史页的 `cursor`、`run`、`turn`、`action` 和协作状态均指向日志末尾，而非本页末尾。可用 `at=N` 把索引、内容和状态限制在已接收的正整数游标，超过日志末尾则返回 400。Web 补载时使用当前 SSE 游标，避免较新的快照内容再被实时片段重复追加。浏览历史不会打开 Agent 或修复工具。
+
+客户端加载最近历史，再从 `cursor` 订阅实时事件。快照的 `run`、`turn` 与 `action` 用于接续生成中的回复和操作。向上滚动加载更早的 run，并保持当前消息的位置；左侧刻度提供全部任务的标题、摘要预览与跳转，未加载的任务按需获取。跳转产生的历史空隙提供补载按钮。补载按消息 ID 去重、按 `seq` 排序，保留已有实时内容与 SSE 游标。历史接口不提供原始事件分页，增量使用 SSE。
+
+`interval_ms` 控制普通更新的最小发送间隔，单位为毫秒，范围 50–10000，默认 1000；Web 显式使用 1000。同一窗口内按事件类型、run、turn 拼接文本和思考片段，不跨轮次或工具边界合并。开始、结束、完整消息、工具开始/结束、计划与协作变化、操作结果立即发送，并带上之前尚未发送的片段；等待回答、取消和失败等 `state` 变化也立即发送，不受普通间隔限制。关键事件会重新开始普通更新的计时间隔。
+
+SSE 使用 `event: records`，数据为 `{"records":[...],"cursor":N}`。合并记录的 `seq` 是最后一个来源片段的序号，批内按序号排序；SSE `id` 与 `cursor` 相同，还覆盖被省略的 Provider 记录。只有省略记录时可发送 `records:[]` 来推进游标。客户端整批应用后推进游标，重复批次直接忽略；重连使用最后收到的一整批 ID，尚未发送的片段从日志重新读取。`state` 没有独立日志游标，在之前的内容发送完毕后发布。
 
 聊天传输保留消息、文本、思考、工具、协作状态和操作结果；重复的模型请求与原始 Provider 数据不发送给聊天界面。事件序号保持不变，原始 JSONL 与独立查看器仍保留完整记录。压缩改变模型上下文，不删除 Web 中的历史。流式回复最终由完整消息替换，避免重复展示。
 
-每条 SSE 连接独立读取日志，不在同步 SDK 回调中发送网络数据。响应带 `X-Accel-Buffering: no`，空闲时发送心跳。
+每条 SSE 连接独立读取日志，不在同步 SDK 回调中发送网络数据。关键 SDK 事件与状态变化通过不阻塞的通知唤醒读取器；CLI 写入的共享日志使用最长 250 ms 的轮询作为补充。响应带 `X-Accel-Buffering: no`，空闲时发送心跳。
 
 ## 网关部署
 

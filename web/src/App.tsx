@@ -1,17 +1,20 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, HttpError } from "./api";
 import { Icon } from "./icons";
-import { applyRecord, emptyModel } from "./model";
-import type { ChatItem, ChatModel } from "./model";
+import { applyBatch, emptyModel, fromHistory, mergeHistory } from "./model";
+import { RunNavigator } from "./RunNavigator";
+import type { ChatItem, ChatModel, HistorySnapshot } from "./model";
 import { busy } from "./types";
-import type { Answer, Command, PendingInput, SessionRecord, SessionSummary, State } from "./types";
+import type { Answer, Command, EventBatch, PendingInput, SessionSummary, State } from "./types";
 
 const statusText: Record<string, string> = { idle: "就绪", running: "正在执行", waiting_input: "等待你的回答", cancelling: "正在停止", completed: "已完成", failed: "执行失败", aborted: "已停止", interrupted: "上次任务已中断", closed: "查看历史" };
-type ModelAction = { records: SessionRecord[] } | { reset: true };
+type ModelAction = { batch: EventBatch } | { history: HistorySnapshot } | { page: HistorySnapshot } | { reset: true };
 function reducer(model: ChatModel, action: ModelAction): ChatModel {
-  return "reset" in action ? emptyModel : action.records.reduce(applyRecord, model);
+  if ("reset" in action) return emptyModel;
+  if ("page" in action) return mergeHistory(model, action.page);
+  return "history" in action ? fromHistory(action.history) : applyBatch(model, action.batch);
 }
 
 function RichText({ text }: { text: string }) {
@@ -21,7 +24,7 @@ function RichText({ text }: { text: string }) {
 function Message({ item }: { item: ChatItem }) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState("");
-  return <article className={`message ${item.role}`} aria-label={item.role === "user" ? "你的消息" : item.role === "notice" ? "会话提示" : "Iota 回复"}>
+  return <article id={`message-${item.id}`} data-run={item.run_id} tabIndex={-1} className={`message ${item.role}`} aria-label={item.role === "user" ? "你的消息" : item.role === "notice" ? "会话提示" : "Iota 回复"}>
     {item.reasoning && <details className="reasoning"><summary>思考过程 <Icon name="chevron" size={16} /></summary><div className="plain">{item.reasoning}</div></details>}
     {item.text && (item.role === "user" ? <div className="user-bubble">{item.text}</div> : <RichText text={item.text} />)}
     {item.tools.map(tool => <details className={`tool ${tool.status}`} key={tool.id}>
@@ -86,6 +89,14 @@ export function App() {
   const [menu, setMenu] = useState(false);
   const [search, setSearch] = useState("");
   const [model, dispatch] = useReducer(reducer, emptyModel);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const historyRetry = useRef<{ before: string } | { run: string } | null>(null);
+  const [activeRun, setActiveRun] = useState("");
+  const historyRequest = useRef<AbortController | null>(null);
+  const pendingJump = useRef<string | null>(null);
+  const scrollAnchor = useRef<{ id: string; top: number } | null>(null);
+  const lastScroll = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
   const follows = useRef(true);
   const composer = useRef<HTMLTextAreaElement>(null);
@@ -95,6 +106,46 @@ export function App() {
   const selectedSummary = sessions.find(session => session.name === selected);
   const collaboration = state?.collaboration ?? model.collaboration;
   const plan = state?.plan_preview ?? collaboration?.plan;
+  const oldestLoaded = model.runs.find(run => model.loadedRuns.includes(run.id));
+  const hasOlder = !!oldestLoaded && model.runs[0]?.id !== oldestLoaded.id;
+
+  function jumpToRun(id: string) {
+    const node = document.getElementById(`run-${id}`);
+    const scroll = scroller.current;
+    if (!node || !scroll) return;
+    follows.current = false;
+    scroll.scrollTop += node.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 24;
+    node.focus({ preventScroll: true });
+    setActiveRun(id);
+  }
+
+  async function loadHistory(query: { before: string } | { run: string }) {
+    if (!selected) return;
+    if (historyRequest.current) {
+      if ("before" in query) return;
+      historyRequest.current.abort();
+    }
+    const abort = new AbortController();
+    historyRequest.current = abort;
+    setHistoryLoading(true); setHistoryError("");
+    try {
+      const params = new URLSearchParams({ ...query, at: String(model.sequence) });
+      const page = await api<HistorySnapshot>(`sessions/${selected}/history?${params}`, undefined, "GET", abort.signal);
+      if (abort.signal.aborted) return;
+      follows.current = false;
+      if ("run" in query) pendingJump.current = query.run;
+      else {
+        const scroll = scroller.current;
+        const node = scroll && [...scroll.querySelectorAll<HTMLElement>(".message")].find(node => node.getBoundingClientRect().bottom > scroll.getBoundingClientRect().top);
+        if (node) scrollAnchor.current = { id: node.id, top: node.getBoundingClientRect().top };
+      }
+      dispatch({ page });
+    } catch (error) {
+      if (!abort.signal.aborted) { historyRetry.current = query; setHistoryError(String(error)); }
+    } finally {
+      if (historyRequest.current === abort) { historyRequest.current = null; setHistoryLoading(false); }
+    }
+  }
 
   async function refreshSessions() {
     const result = await api<SessionSummary[]>("sessions");
@@ -111,48 +162,51 @@ export function App() {
 
   useEffect(() => {
     dispatch({ reset: true }); setState(null); setConnected(false); setMenu(false);
+    historyRequest.current?.abort(); historyRequest.current = null;
+    pendingJump.current = null; scrollAnchor.current = null;
+    historyRetry.current = null;
+    setHistoryLoading(false); setHistoryError(""); setActiveRun(""); lastScroll.current = 0;
     follows.current = true;
     if (!selected) { localStorage.removeItem("iota.session"); setLoading(false); return; }
     localStorage.setItem("iota.session", selected);
     const abort = new AbortController();
     let stream: EventSource | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     setLoading(true);
     void (async () => {
-      let cursor = 0;
       try {
-        for (;;) {
-          const page = await api<{ records: SessionRecord[]; cursor: number; more: boolean }>(`sessions/${selected}/history?after=${cursor}`, undefined, "GET", abort.signal);
-          if (abort.signal.aborted) return;
-          dispatch({ records: page.records }); cursor = page.cursor;
-          if (!page.more) break;
-        }
-        const snapshot = await api<State>(`sessions/${selected}/state`, undefined, "GET", abort.signal);
+        const [history, snapshot] = await Promise.all([
+          api<HistorySnapshot>(`sessions/${selected}/history`, undefined, "GET", abort.signal),
+          api<State>(`sessions/${selected}/state`, undefined, "GET", abort.signal),
+        ]);
         if (abort.signal.aborted) return;
+        dispatch({ history });
         setState(snapshot); setLoading(false);
-        stream = new EventSource(`./api/sessions/${selected}/events?after=${cursor}`);
+        stream = new EventSource(`./api/sessions/${selected}/events?after=${history.cursor}&interval_ms=1000`);
         stream.onopen = () => setConnected(true);
         stream.onerror = () => setConnected(false);
-        const batch: SessionRecord[] = [];
-        stream.addEventListener("record", event => {
-          batch.push(JSON.parse((event as MessageEvent<string>).data) as SessionRecord);
-          if (timer === undefined) timer = setTimeout(() => {
-            if (!abort.signal.aborted) {
-              const records = batch.splice(0);
-              dispatch({ records });
-              if (records.some(record => record.type === "client_result" || record.payload?.message?.role === "user")) void refreshSessions().catch(() => {});
-            }
-            timer = undefined;
-          }, 60);
+        stream.addEventListener("records", event => {
+          if (abort.signal.aborted) return;
+          const batch = JSON.parse((event as MessageEvent<string>).data) as EventBatch;
+          dispatch({ batch });
+          if (batch.records.some(record => record.type === "client_result" || record.payload?.message?.role === "user")) void refreshSessions().catch(() => {});
         });
         stream.addEventListener("state", event => { if (!abort.signal.aborted) setState(JSON.parse((event as MessageEvent<string>).data) as State); });
       } catch (error) { if (!abort.signal.aborted) { setError(String(error)); setLoading(false); if (error instanceof HttpError && error.status === 404) setSelected(null); } }
     })();
-    return () => { abort.abort(); stream?.close(); if (timer !== undefined) clearTimeout(timer); };
+    return () => { abort.abort(); stream?.close(); historyRequest.current?.abort(); };
   }, [selected]);
 
-  useEffect(() => {
-    if (follows.current && scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
+  useLayoutEffect(() => {
+    const scroll = scroller.current;
+    if (!scroll) return;
+    if (pendingJump.current) { jumpToRun(pendingJump.current); pendingJump.current = null; }
+    else if (scrollAnchor.current) {
+      const anchor = scrollAnchor.current;
+      const node = document.getElementById(anchor.id);
+      if (node) scroll.scrollTop += node.getBoundingClientRect().top - anchor.top;
+      scrollAnchor.current = null;
+    } else if (follows.current) { scroll.scrollTop = scroll.scrollHeight; setActiveRun(model.runs.at(-1)?.id ?? ""); }
+    lastScroll.current = scroll.scrollTop;
   }, [model, state?.pending]);
 
   useEffect(() => {
@@ -248,18 +302,44 @@ export function App() {
       <header className="topbar"><div className="header-left">{!sidebar && <button className="icon-button" aria-label="展开侧栏" onClick={() => setSidebar(true)}><Icon name="panel" /></button>}<span className="app-name">Iota <span className="model-name">{state?.model || config?.model || ""}</span></span></div>
         <div className="header-right"><span className={`connection ${selected && !connected ? "offline" : ""}`} role="status">{selected && !connected && !loading ? "正在重连" : statusText[state?.status ?? "idle"]}</span>{selected && <div className="menu-wrap"><button className="icon-button" aria-label="会话操作" aria-expanded={menu} onClick={() => setMenu(current => !current)}><Icon name="more" /></button>{menu && <div className="menu"><button disabled={!active || running || working} onClick={() => void command("compact", "")}>压缩上下文</button><button disabled={!active || running || working} onClick={() => { if (window.confirm("清空模型上下文？历史记录仍保留。")) void command("reset"); }}>重置上下文</button><button disabled={!active || running || working} onClick={() => void command("skills_reload")}>重新加载 skills</button><button disabled={!active || running || working} onClick={() => void release()}>释放会话</button></div>}</div>}</div>
       </header>
-      <div className="conversation-scroll" ref={scroller} onScroll={() => { const node = scroller.current; if (node) follows.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }}>
+      <div className="conversation-frame">
+      {historyLoading && <p className="history-loading" role="status">正在加载历史…</p>}
+      {historyError && <div className="history-error" role="alert"><span>{historyError.replace(/^Error: /, "")}</span><button className="history-retry" onClick={() => { if (historyRetry.current) void loadHistory(historyRetry.current); }}>重试加载</button></div>}
+      {selected && !loading && !!model.runs.length && <RunNavigator runs={model.runs} active={activeRun} jump={id => { if (model.loadedRuns.includes(id)) jumpToRun(id); else void loadHistory({ run: id }); }} />}
+      <div className={`conversation-scroll ${model.runs.length ? "with-index" : ""}`} ref={scroller} onWheel={event => {
+        if (event.deltaY < 0 && (scroller.current?.scrollTop ?? 0) < 100 && hasOlder && oldestLoaded && !historyError) void loadHistory({ before: oldestLoaded.id });
+      }} onScroll={() => {
+        const node = scroller.current;
+        if (!node) return;
+        const upwards = node.scrollTop < lastScroll.current;
+        lastScroll.current = node.scrollTop;
+        follows.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100;
+        const visible = [...node.querySelectorAll<HTMLElement>(".message[data-run]")].find(item => item.getBoundingClientRect().bottom > node.getBoundingClientRect().top + 24);
+        if (visible?.dataset.run) setActiveRun(visible.dataset.run);
+        if (upwards && node.scrollTop < 100 && hasOlder && oldestLoaded && !historyError) void loadHistory({ before: oldestLoaded.id });
+      }}>
         <div className={`conversation ${!selected ? "empty" : ""}`}>
           {!selected && <div className="welcome"><h1>今天要做什么？</h1><p>描述任务，Iota 会在你的项目中执行。</p><label className="workspace-field">工作目录<input aria-label="工作目录" value={cwd} onChange={event => setCWD(event.target.value)} placeholder="项目的绝对路径" /></label></div>}
           {loading && <p className="loading" role="status">正在读取会话…</p>}
           {selected && !loading && <div className="workspace-path" title={state?.cwd || selectedSummary?.cwd}>{state?.cwd || selectedSummary?.cwd}</div>}
-          {model.items.map(item => <Message item={item} key={item.id} />)}
+          {hasOlder && oldestLoaded && <button className="history-more" disabled={historyLoading} onClick={() => void loadHistory({ before: oldestLoaded.id })}>加载更早的任务</button>}
+          {model.items.filter(item => !item.run_id).map(item => <Message item={item} key={item.id} />)}
+          {model.runs.map((run, index) => {
+            if (!model.loadedRuns.includes(run.id)) return null;
+            const previous = model.runs[index - 1];
+            const gap = previous && !model.loadedRuns.includes(previous.id) && run.id !== oldestLoaded?.id;
+            return <section className="run-messages" id={`run-${run.id}`} tabIndex={-1} aria-label={run.title} key={run.id}>
+              {gap && <button className="history-more" disabled={historyLoading} onClick={() => void loadHistory({ before: run.id })}>加载这之前的任务</button>}
+              {model.items.filter(item => item.run_id === run.id).map(item => <Message item={item} key={item.id} />)}
+            </section>;
+          })}
           {selected && !loading && !model.items.length && <div className="welcome"><h1>从一条消息开始</h1><p>这份会话还没有任务。</p></div>}
           {collaboration?.progress && <details className="progress"><summary>执行进度 <Icon name="chevron" size={16} /></summary><ul>{collaboration.progress.plan.map(step => <li key={step.step_id}><span className={`step-mark ${step.status}`}><Icon name={step.status === "completed" ? "check" : "more"} size={16} /></span>{step.step}</li>)}</ul></details>}
           {plan && <details className="saved-plan"><summary>当前计划 <Icon name="chevron" size={16} /></summary><RichText text={plan.content} />{state?.plan_error && <p className="error-inline">{state.plan_error}</p>}{state?.collaboration?.mode === "plan" && <button className="primary" disabled={running || working || !active || !state.plan_hash} onClick={() => void command("execute")}>批准并执行</button>}</details>}
           {state?.pending && <Questionnaire key={state.pending.id} pending={state.pending} stopping={state.status === "cancelling"} submit={async answers => { await api<void>(`sessions/${selected}/answers`, { id: state.pending?.id, response: { answers } }); }} />}
           {running && !state?.pending && <p className="activity" role="status"><span className="activity-dot" />{statusText[state?.status ?? "running"]}</p>}
         </div>
+      </div>
       </div>
       <div className="composer-area">
         {error && <div className="error-banner" role="alert"><span>{error.replace(/^Error: /, "")}</span><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError("")}><Icon name="close" size={16} /></button></div>}

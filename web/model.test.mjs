@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyRecord, emptyModel } from "./src/model.ts";
+import { readFileSync } from "node:fs";
+import { applyBatch, applyRecord, emptyModel, fromHistory, mergeHistory } from "./src/model.ts";
 
 test("replay merges streamed and complete messages and ignores duplicate cursors", () => {
   const records = [
@@ -78,4 +79,71 @@ test("reused tool call IDs do not replace an earlier run's results", () => {
   const model = records.reduce(applyRecord, emptyModel);
   assert.equal(model.items[0].tools[0].result, "old result");
   assert.equal(model.items[1].tools[0].result, "new result");
+});
+
+test("server snapshot matches event replay and resumes an unfinished reply without gaps", () => {
+  const fixture = JSON.parse(readFileSync(new URL("../internal/server/testdata/history.json", import.meta.url), "utf8"));
+  const normalize = model => JSON.parse(JSON.stringify(model));
+  const replay = fixture.records.reduce(applyRecord, emptyModel);
+  const snapshot = fromHistory(fixture.snapshot);
+  assert.deepEqual(normalize(snapshot), normalize(replay));
+  const live = [
+    fixture.records.at(-1), // A repeated cursor must be ignored.
+    { seq: 34, run_id: "third", type: "reasoning_delta", payload: { reasoning: " continued" } },
+    { seq: 35, run_id: "third", type: "text_delta", payload: { text: " continued" } },
+    { seq: 36, run_id: "third", type: "tool_end", payload: { tool_call: { id: "read", name: "read", arguments: {} }, tool_result: "latest result" } },
+    { seq: 37, run_id: "third", type: "message_added", payload: { message: { role: "assistant", content: "finished" } } },
+  ];
+  const resumed = live.reduce(applyRecord, snapshot);
+  assert.deepEqual(normalize(resumed), normalize(live.reduce(applyRecord, replay)));
+  assert.equal(resumed.items.length, snapshot.items.length);
+  assert.equal(resumed.items.at(-1).text, "finished");
+  assert.equal(resumed.items.at(-1).reasoning, "still thinking continued");
+  assert.equal(resumed.items.at(-1).tools[0].result, "latest result");
+  assert.equal(resumed.items[1].tools[0].result, "old result");
+});
+
+test("merged batches preserve replay, deduplicate frames and advance omitted event cursors", () => {
+  const fixture = JSON.parse(readFileSync(new URL("../internal/server/testdata/event-batches.json", import.meta.url), "utf8"));
+  // Merged drafts carry the last fragment's seq; visible content and ordering
+  // are identical even though the first retained fragment has a different seq.
+  const normalize = model => JSON.parse(JSON.stringify({ ...model, items: model.items.map(({ seq, ...item }) => item) }));
+  const replay = fixture.records.reduce(applyRecord, emptyModel);
+  const batched = fixture.batches.reduce(applyBatch, emptyModel);
+  assert.deepEqual(normalize(batched), normalize(replay));
+  assert.equal(batched.items[0].reasoning, "thinking");
+  assert.equal(batched.items[0].text, "hello world");
+  assert.equal(batched.items[0].tools[0].result, "result");
+  assert.strictEqual(applyBatch(batched, fixture.batches.at(-1)), batched);
+  const checkpoint = applyBatch(batched, { records: [], cursor: 20 });
+  assert.equal(checkpoint.sequence, 20);
+  assert.strictEqual(checkpoint.items, batched.items);
+  assert.strictEqual(applyBatch(checkpoint, fixture.batches[2]), checkpoint);
+});
+
+test("older pages merge in log order without overwriting live replies or the stream checkpoint", () => {
+  const fixture = JSON.parse(readFileSync(new URL("../internal/server/testdata/history.json", import.meta.url), "utf8"));
+  const latest = { ...fixture.snapshot, items: fixture.snapshot.items.filter(item => item.run_id === "third"), loaded_runs: ["third"] };
+  const live = applyRecord(fromHistory(latest), { seq: 34, run_id: "third", type: "text_delta", payload: { text: " live" } });
+  const old = { ...fixture.snapshot, items: fixture.snapshot.items.filter(item => item.run_id !== "third"), loaded_runs: ["first", "second"] };
+  const merged = mergeHistory(live, old);
+  assert.equal(merged.sequence, 34);
+  assert.equal(merged.run, "third");
+  assert.equal(merged.turn, live.turn);
+  assert.deepEqual(merged.collaboration, live.collaboration);
+  assert.equal(merged.items[0].text, "question");
+  assert.equal(merged.items.at(-1).text, "partial live");
+  assert.equal(merged.runs.at(-1).end_seq, 34);
+  assert.deepEqual(mergeHistory(merged, old), merged);
+  assert.deepEqual(mergeHistory(merged, fixture.snapshot).items, merged.items);
+});
+
+test("loading a page with a newer index never suppresses the upcoming live run", () => {
+  const base = fromHistory({ items: [], runs: [], loaded_runs: [], cursor: 1, run: "", turn: 0 });
+  const future = { id: "future", start_seq: 2, end_seq: 5, started_at: "", title: "question", preview: "answer", status: "completed" };
+  const indexed = mergeHistory(base, { items: [], runs: [future], loaded_runs: [], cursor: 5, run: "future", turn: 1 });
+  assert.equal(indexed.sequence, 1);
+  const live = applyBatch(indexed, { cursor: 3, records: [{ seq: 2, run_id: "future", type: "run_start" }, { seq: 3, run_id: "future", type: "message_added", payload: { message: { role: "user", content: "question" } } }] });
+  assert.deepEqual(live.loadedRuns, ["future"]);
+  assert.equal(live.items[0].text, "question");
 });

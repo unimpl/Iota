@@ -300,7 +300,7 @@ func TestGatewayOriginAndCredentialsStayServerSide(t *testing.T) {
 	}
 }
 
-func TestHistoryPagesWithoutRepairingPendingTools(t *testing.T) {
+func TestHistorySnapshotSkipsMetadataAndIncompleteTail(t *testing.T) {
 	provider := testProvider{stream: func(ctx context.Context, request iota.Request, emit func(iota.Delta)) (iota.Response, error) {
 		return iota.Response{}, nil
 	}}
@@ -312,24 +312,13 @@ func TestHistoryPagesWithoutRepairingPendingTools(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var page struct {
-		Records []Record `json:"records"`
-		Cursor  uint64   `json:"cursor"`
-		More    bool     `json:"more"`
-	}
+	var snapshot historySnapshot
 	data := request(t, httpServer, "GET", "sessions/"+name+"/history", nil, 200)
-	if err := json.Unmarshal(data, &page); err != nil {
+	if err := json.Unmarshal(data, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Records) != 200 || page.Cursor != 200 || !page.More {
-		t.Fatalf("page records=%d cursor=%d more=%t", len(page.Records), page.Cursor, page.More)
-	}
-	data = request(t, httpServer, "GET", "sessions/"+name+"/history?after=200", nil, 200)
-	if err := json.Unmarshal(data, &page); err != nil {
-		t.Fatal(err)
-	}
-	if len(page.Records) != 11 || page.More {
-		t.Fatalf("tail records=%d more=%t", len(page.Records), page.More)
+	if len(snapshot.Items) != 0 || snapshot.Cursor != 211 || strings.Contains(string(data), `"records"`) {
+		t.Fatalf("snapshot=%s", data)
 	}
 	request(t, httpServer, "GET", "sessions/"+name+"/history?after=oops", nil, 400)
 	// A complete header followed by a partial record stays invisible to readers.
@@ -345,5 +334,11 @@ func TestHistoryPagesWithoutRepairingPendingTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	file.Close()
-	request(t, httpServer, "GET", "sessions/"+name+"/history?after=200", nil, 200)
+	data = request(t, httpServer, "GET", "sessions/"+name+"/history", nil, 200)
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Cursor != 212 {
+		t.Fatalf("incomplete tail advanced cursor: %d", snapshot.Cursor)
+	}
 }

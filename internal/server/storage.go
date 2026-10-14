@@ -16,7 +16,7 @@ import (
 
 var sessionName = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$`)
 
-// Record preserves SDK sequence numbers for history paging and SSE resumption.
+// Record preserves SDK sequence numbers for history snapshots and SSE resumption.
 type Record struct {
 	Version   int             `json:"version"`
 	Sequence  uint64          `json:"seq"`
@@ -31,7 +31,7 @@ type Record struct {
 // chunks from the chat transport. The original JSONL remains unchanged.
 func chatRecord(record Record) Record {
 	switch record.Type {
-	case "session_start", "tool_start", "tool_end", "run_end", "mode_changed", "plan_saved", "plan_approved", "progress_updated", "client_result":
+	case "session_start", "run_start", "turn_start", "session_reset", "context_compacted", "tool_start", "tool_end", "run_end", "mode_changed", "plan_saved", "plan_approved", "progress_updated", "client_result":
 		return record
 	case "client_request":
 		var command commandRequest
@@ -100,7 +100,12 @@ func walkRecords(path string, visit func(Record) bool) error {
 		return err
 	}
 	defer file.Close()
-	reader := bufio.NewReader(file)
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	// Bound the read so an active writer cannot extend this snapshot indefinitely.
+	reader := bufio.NewReader(io.LimitReader(file, info.Size()))
 	var sequence uint64
 	var id string
 	for {

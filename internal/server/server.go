@@ -33,13 +33,15 @@ type Config struct {
 
 // Server owns Agent lifetimes, independent of browsers and HTTP requests.
 type Server struct {
-	config   Config
-	folder   string
-	ctx      context.Context
-	cancel   context.CancelFunc
-	mu       sync.Mutex
-	sessions map[string]*workspace
-	closing  bool
+	config      Config
+	folder      string
+	ctx         context.Context
+	cancel      context.CancelFunc
+	mu          sync.Mutex
+	sessions    map[string]*workspace
+	closing     bool
+	eventMu     sync.Mutex
+	subscribers map[string]map[chan struct{}]struct{}
 }
 
 type workspace struct {
@@ -57,6 +59,7 @@ type workspace struct {
 	requests     map[string]commandResult
 	pending      *pendingInput
 	inputCounter uint64
+	notify       func()
 }
 
 type pendingInput struct {
@@ -287,6 +290,7 @@ func (s *Server) attach(session *iota.Session) (*workspace, error) {
 		settings.CWD = session.Info().CWD
 	}
 	owned := &workspace{session: session, cwd: settings.CWD, status: "idle", requests: make(map[string]commandResult)}
+	owned.notify = func() { s.notifyEvents(session.Path()) }
 	agent, err := s.config.NewAgent(settings, s.config.Home, owned.userInput, nil)
 	if err != nil {
 		return nil, err
@@ -391,6 +395,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	}
 	name := filepath.Base(session.Path())
 	s.sessions[name] = owned
+	owned.notify()
 	sendJSON(w, 201, struct {
 		Name string `json:"name"`
 	}{name})
@@ -430,6 +435,7 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sessions[name] = owned
+	owned.notify()
 	sendJSON(w, 200, struct {
 		Open bool `json:"open"`
 	}{true})
@@ -453,6 +459,7 @@ func (s *Server) release(w http.ResponseWriter, r *http.Request) {
 	owned.released = true
 	err := owned.session.Close()
 	delete(s.sessions, name)
+	owned.notify()
 	if err != nil {
 		fail(w, 500, err)
 		return

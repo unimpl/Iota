@@ -100,6 +100,7 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(s.ctx)
 	owned.cancel = cancel
 	owned.done = make(chan struct{})
+	owned.notify()
 	go s.execute(ctx, owned, command)
 	sendJSON(w, http.StatusAccepted, result)
 }
@@ -113,14 +114,14 @@ func (s *Server) execute(ctx context.Context, owned *workspace, command commandR
 	case "reset":
 		err = owned.session.Reset(owned.agent)
 	case "compact":
-		_, err = owned.session.Compact(ctx, owned.agent, command.Prompt, nil)
+		_, err = owned.session.Compact(ctx, owned.agent, command.Prompt, owned.publish)
 	case "mode":
-		err = owned.session.SetMode(owned.agent, iota.Mode(command.Mode), nil)
+		err = owned.session.SetMode(owned.agent, iota.Mode(command.Mode), owned.publish)
 	case "execute":
 		var plan iota.SavedPlan
-		plan, err = owned.session.ApprovePlanVersion(owned.agent, command.PlanHash, nil)
+		plan, err = owned.session.ApprovePlanVersion(owned.agent, command.PlanHash, owned.publish)
 		if err == nil {
-			_, err = owned.session.Run(ctx, owned.agent, app.ApprovedPlanPrompt(plan), nil)
+			_, err = owned.session.Run(ctx, owned.agent, app.ApprovedPlanPrompt(plan), owned.publish)
 		}
 	case "skills", "skills_reload", "skill_install":
 		line := "/skill list"
@@ -131,10 +132,10 @@ func (s *Server) execute(ctx context.Context, owned *workspace, command commandR
 			line = "/skill install " + command.Prompt
 		}
 		var result iota.SkillCommandResult
-		result, err = owned.agent.HandleSkillCommand(ctx, line, owned.session, nil)
+		result, err = owned.agent.HandleSkillCommand(ctx, line, owned.session, owned.publish)
 		output = result.Output
 		if err == nil && result.Prompt != "" {
-			_, err = owned.session.Run(ctx, owned.agent, result.Prompt, nil)
+			_, err = owned.session.Run(ctx, owned.agent, result.Prompt, owned.publish)
 		}
 	}
 	result := commandResult{ID: command.ID, Status: "completed", Output: output, Action: command.Action, Prompt: command.Prompt, Mode: command.Mode, PlanHash: command.PlanHash}
@@ -161,6 +162,7 @@ func (s *Server) execute(ctx context.Context, owned *workspace, command commandR
 	owned.status, owned.lastError = result.Status, result.Error
 	owned.running = false
 	close(owned.done)
+	owned.notify()
 }
 
 func (s *Server) runPrompt(ctx context.Context, owned *workspace, prompt, planHash string) (string, error) {
@@ -169,11 +171,11 @@ func (s *Server) runPrompt(ctx context.Context, owned *workspace, prompt, planHa
 	}
 	line := strings.TrimSpace(prompt)
 	if line == "/execute" {
-		plan, err := owned.session.ApprovePlanVersion(owned.agent, planHash, nil)
+		plan, err := owned.session.ApprovePlanVersion(owned.agent, planHash, owned.publish)
 		if err != nil {
 			return "", err
 		}
-		_, err = owned.session.Run(ctx, owned.agent, app.ApprovedPlanPrompt(plan), nil)
+		_, err = owned.session.Run(ctx, owned.agent, app.ApprovedPlanPrompt(plan), owned.publish)
 		return "", err
 	}
 	if line == "/reset" {
@@ -181,24 +183,24 @@ func (s *Server) runPrompt(ctx context.Context, owned *workspace, prompt, planHa
 	}
 	fields := strings.Fields(line)
 	if len(fields) > 0 && fields[0] == "/compact" {
-		_, err := owned.session.Compact(ctx, owned.agent, strings.TrimSpace(strings.TrimPrefix(line, "/compact")), nil)
+		_, err := owned.session.Compact(ctx, owned.agent, strings.TrimSpace(strings.TrimPrefix(line, "/compact")), owned.publish)
 		return "", err
 	}
-	skill, err := owned.agent.HandleSkillCommand(ctx, line, owned.session, nil)
+	skill, err := owned.agent.HandleSkillCommand(ctx, line, owned.session, owned.publish)
 	if skill.Handled {
 		if err == nil && skill.Prompt != "" {
-			_, err = owned.session.Run(ctx, owned.agent, skill.Prompt, nil)
+			_, err = owned.session.Run(ctx, owned.agent, skill.Prompt, owned.publish)
 		}
 		return skill.Output, err
 	}
-	handled, next, output, err := app.PlanningCommand(line, owned.agent, owned.session, nil)
+	handled, next, output, err := app.PlanningCommand(line, owned.agent, owned.session, owned.publish)
 	if handled {
 		if err == nil && next != "" {
-			_, err = owned.session.Run(ctx, owned.agent, next, nil)
+			_, err = owned.session.Run(ctx, owned.agent, next, owned.publish)
 		}
 		return output, err
 	}
-	_, err = owned.session.Run(ctx, owned.agent, prompt, nil)
+	_, err = owned.session.Run(ctx, owned.agent, prompt, owned.publish)
 	return "", err
 }
 
@@ -208,6 +210,7 @@ func (owned *workspace) userInput(ctx context.Context, request iota.UserInputReq
 	pending := &pendingInput{ID: fmt.Sprintf("%s-%d", owned.operation, owned.inputCounter), Request: request, CallIndex: request.CallIndex, CallCount: request.CallCount, answers: make(chan iota.UserInputResponse, 1)}
 	owned.pending = pending
 	owned.status = "waiting_input"
+	owned.notify()
 	owned.mu.Unlock()
 	defer func() {
 		owned.mu.Lock()
@@ -215,6 +218,7 @@ func (owned *workspace) userInput(ctx context.Context, request iota.UserInputReq
 		if owned.status != "cancelling" {
 			owned.status = "running"
 		}
+		owned.notify()
 		owned.mu.Unlock()
 	}()
 	select {
@@ -235,6 +239,7 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 	if owned.running && owned.cancel != nil {
 		owned.status = "cancelling"
 		owned.cancel()
+		owned.notify()
 	}
 	w.WriteHeader(204)
 }
@@ -265,6 +270,7 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 	pending.answers <- input.Response
 	owned.pending = nil
 	owned.status = "running"
+	owned.notify()
 	w.WriteHeader(204)
 }
 

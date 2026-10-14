@@ -83,9 +83,15 @@ export interface EventPayload {
 
 export interface SessionRecord {
   seq: number;
+  timestamp?: string;
   run_id?: string;
   type: string;
   payload?: EventPayload;
+}
+
+export interface EventBatch {
+  records: SessionRecord[];
+  cursor: number;
 }
 
 export interface Command {
